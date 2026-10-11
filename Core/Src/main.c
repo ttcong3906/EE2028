@@ -180,7 +180,7 @@ static void uart_kick(void)
     }
 }
 
-static void uart_write(const char *s)
+static void uart_write_raw(const char *s)
 {
     if (!uart_enabled) return;
     __disable_irq();
@@ -192,6 +192,23 @@ static void uart_write(const char *s)
     }
     uart_kick();
     __enable_irq();
+}
+
+/* Console-aware output. If the user is half-way through typing a command,
+ * erase that line (VT100 "\r ESC[K"), print the message, then redraw the
+ * prompt and the partial command underneath, so incoming telemetry never
+ * mixes with what is being typed. */
+static void uart_write(const char *s)
+{
+    if (cmd_len > 0) {
+        uart_write_raw("\r\x1b[K");
+        uart_write_raw(s);
+        cmd_line[cmd_len] = '\0';
+        uart_write_raw("> ");
+        uart_write_raw(cmd_line);
+    } else {
+        uart_write_raw(s);
+    }
 }
 
 static void uart_printf(const char *fmt, ...)
@@ -1247,6 +1264,7 @@ static void cmd_exec(char *line)
     uart_printf("[CMD] ERR unknown command '%s' (type HELP)\r\n", verb);
 }
 
+/* The board echoes what is typed (turn OFF "Local echo" in TeraTerm). */
 static void uart_poll_commands(void)
 {
     while (rx_tail != rx_head) {
@@ -1257,13 +1275,22 @@ static void uart_poll_commands(void)
             if (cmd_len > 0) {
                 cmd_line[cmd_len] = '\0';
                 cmd_len = 0;
+                uart_write_raw("\r\n");
                 cmd_exec(cmd_line);
                 if (state == ST_TERMINATED) return;
             }
         } else if (c == '\b' || c == 0x7F) {
-            if (cmd_len > 0) cmd_len--;
+            if (cmd_len > 0) {
+                cmd_len--;
+                uart_write_raw(cmd_len > 0 ? "\b \b" : "\r\x1b[K");
+            }
+        } else if (c == 0x1B) {                 /* ESC: cancel the line */
+            if (cmd_len > 0) { cmd_len = 0; uart_write_raw("\r\x1b[K"); }
         } else if (cmd_len < CMD_MAX_LEN - 1U && c >= 32 && c < 127) {
+            char echo[2] = { c, '\0' };
+            if (cmd_len == 0) uart_write_raw("> ");
             cmd_line[cmd_len++] = c;
+            uart_write_raw(echo);
         }
     }
 }

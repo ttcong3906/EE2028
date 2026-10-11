@@ -172,7 +172,9 @@ Mỗi dòng có tiền tố `[TAG]` để người đọc trên TeraTerm vẫn d
 
 ### PC → Board (UART hai chiều)
 
-Nhận bằng ngắt, từng byte vào ring buffer; main loop ghép dòng khi gặp `\r` hoặc `\n`. Không phân biệt hoa thường. Board không echo từng ký tự; nếu dùng TeraTerm thì bật *Local echo*.
+Nhận bằng ngắt, từng byte vào ring buffer; main loop ghép dòng khi gặp `\r` hoặc `\n`. Không phân biệt hoa thường.
+
+**Console:** board tự echo ký tự đang gõ (TeraTerm phải **tắt** *Local echo*). Gõ ký tự đầu tiên sẽ hiện dấu nhắc `> `. Khi có tin nhắn mới trong lúc đang gõ, board xóa dòng đang gõ (`\r` + `ESC[K`), in tin nhắn, rồi in lại `> ` cùng phần lệnh đang gõ dở ở dòng dưới, nên telemetry không chen vào giữa lệnh. Backspace xóa ký tự, ESC hủy cả dòng.
 
 | Lệnh | Tác dụng | Hợp lệ ở |
 |---|---|---|
