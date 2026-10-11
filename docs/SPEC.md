@@ -1,7 +1,7 @@
 # EE2028 A2 — The Last of EE2028: Spec chốt
 
 Tài liệu này là "hợp đồng" giữa bạn và mình: code viết đúng theo đây, muốn đổi hành vi thì sửa file này trước.
-Những mục đánh dấu **[CẦN CHỐT]** là chỗ đề bài để ngỏ, đang để giá trị mặc định đề xuất.
+Các chỗ đề bài để ngỏ đã chốt ngày 12/10/2026 (xem mục 15). Toàn bộ code nằm trong **một file `Core/Src/main.c`**.
 
 ---
 
@@ -56,7 +56,7 @@ Những mục đánh dấu **[CẦN CHỐT]** là chỗ đề bài để ngỏ, 
 
 | Trạng thái | Single | Double |
 |---|---|---|
-| STANDBY | Bỏ qua, in `[EVT] Single press ignored` **[CẦN CHỐT]** | Sang BATTLE |
+| STANDBY | Bật / tắt **chế độ SOS** | Sang BATTLE (tắt SOS nếu đang bật) |
 | BATTLE | Nạp laser +3/10 | Về STANDBY |
 | ATTACKED | Bỏ qua | Được cứu, về BATTLE |
 | TERMINATED | Bỏ qua (UART đã tắt) | Bỏ qua |
@@ -73,9 +73,19 @@ Những mục đánh dấu **[CẦN CHỐT]** là chỗ đề bài để ngỏ, 
 - LED2: sáng liên tục.
 - Không kiểm tra lật trong STANDBY.
 
+#### Chế độ SOS (chức năng tự chọn cho single press ở STANDBY)
+- Single press: bật SOS, gửi `[EVT] SOS ON - distress beacon active`. Single press lần nữa: tắt SOS, gửi `[EVT] SOS OFF`.
+- Khi SOS bật:
+  - Buzzer phát mã Morse **· · · — — — · · ·** lặp lại (dot 100 ms, dash 300 ms, nghỉ trong ký tự 100 ms, giữa ký tự 300 ms, giữa hai lần lặp 700 ms).
+  - LED matrix hiện lần lượt chữ **S**, **O**, **S**, đồng bộ với chữ đang phát Morse.
+  - OLED dòng cuối nhấp nháy `*** SOS ACTIVE ***`.
+  - Mỗi 1 s gửi thêm `[SOS] Distress signal. Requesting extraction.` sau dòng TLM/WARN.
+- Telemetry, giám sát ngưỡng và LED2 sáng liên tục vẫn chạy bình thường, đúng yêu cầu của STANDBY.
+- Double press (sang BATTLE) tự tắt SOS. `MUTE ON` chỉ tắt tiếng, hình SOS vẫn hiện.
+
 ### BATTLE (không bị tấn công)
 - Khi vào: gửi `Entering BATTLE MODE` và một dòng `[STAT]`.
-- **Không gửi telemetry định kỳ** **[CẦN CHỐT]**, chỉ gửi sự kiện (nạp, bắn, đổi mode).
+- **Không gửi telemetry định kỳ**, chỉ gửi sự kiện (nạp, bắn, đổi mode). Muốn xem trạng thái thì gõ `STATUS`.
 - LED2: nháy **1 Hz** (đảo trạng thái mỗi 500 ms).
 - Laser: xem mục 5.
 - Kiểm tra lật: xem mục 6.
@@ -111,10 +121,9 @@ Những mục đánh dấu **[CẦN CHỐT]** là chỗ đề bài để ngỏ, 
 
 ## 6. Phát hiện lật ngửa
 
-- **Chiều quy ước** **[CẦN CHỐT]**:
-  - Đề viết "Z+ hướng xuống đất khi bay", tức board úp mặt xuống mới là bình thường. Khi đó bình thường `Az ≈ −9.8`, bị lật `Az ≈ +9.8`.
-  - Đề xuất: bình thường là **board nằm ngửa trên bàn** (`Az ≈ +9.8`), lật úp xuống là bị tấn công. Demo tự nhiên hơn.
-  - Code có một `#define FLIP_SIGN` để đổi giữa hai cách trong một dòng.
+- **Chiều quy ước (đã chốt):** mặt có gắn chip hướng lên trên là **bình thường** (`Az ≈ +9.8 m/s²`); úp mặt chip xuống là **bị tấn công** (`Az ≈ −9.8 m/s²`).
+  - Đề viết "Z+ hướng xuống đất khi bay", nghĩa đen là ngược lại. Ta chọn cách trên cho demo tự nhiên. Khi TA hỏi thì giải thích: board được gắn trên drone sao cho mặt chip hướng lên.
+  - Code có `#define FLIP_SIGN` để đổi chiều trong một dòng nếu cần.
 - **Cơ chế:**
   - Chức năng nhận diện hướng **6D** có sẵn trong LSM6DSL, ngưỡng góc 60°, báo ngắt qua INT1 (PD11, EXTI11) khi hướng thay đổi.
   - LSM6DSL là IMU chứa cả gyroscope lẫn accelerometer. Lúc demo có thể giải thích dòng "gyroscope detects upside-down" trong đề là chip IMU đó phát hiện.
@@ -174,6 +183,7 @@ Nhận bằng ngắt, từng byte vào ring buffer; main loop ghép dòng khi g�
 | `MODE STANDBY` / `MODE BATTLE` | Giống double press | STANDBY / BATTLE |
 | `CHARGE` | Giống single press | BATTLE |
 | `RESCUE` | Cứu drone | ATTACKED |
+| `SOS ON` / `SOS OFF` | Bật hoặc tắt chế độ SOS | STANDBY |
 | `MUTE ON` / `MUTE OFF` | Tắt hoặc bật buzzer | Mọi trạng thái |
 
 Lệnh không hợp lệ ở trạng thái hiện tại thì trả `[CMD] ERR not allowed in <MODE>`.
@@ -202,6 +212,7 @@ STANDBY                 BATTLE                  ATTACKED                TERMINAT
 ```
 
 - Dòng cuối STANDBY khi có vi phạm: `WARN: T HIGH, M HIGH`.
+- Khi SOS bật, dòng cuối STANDBY nhấp nháy `*** SOS ACTIVE ***` (ưu tiên hơn dòng WARN).
 
 ---
 
@@ -211,6 +222,7 @@ STANDBY                 BATTLE                  ATTACKED                TERMINAT
 |---|---|
 | STANDBY, bình thường | Vòng tròn "radar" |
 | STANDBY, có vi phạm | Dấu chấm than |
+| STANDBY, SOS bật | Chữ S, O, S lần lượt, đồng bộ với Morse (ưu tiên hơn dấu chấm than) |
 | BATTLE | Thanh năng lượng: số cột sáng = năng lượng (0–7); một chấm ở cột 5 hàng trên cùng đánh dấu ngưỡng bắn |
 | Khi bắn | Hiệu ứng tia laser quét ngang, 5 khung × 60 ms, rồi về thanh năng lượng |
 | ATTACKED | Dấu chấm than nháy 2 Hz, cùng nhịp LED2 |
@@ -226,6 +238,7 @@ STANDBY                 BATTLE                  ATTACKED                TERMINAT
 | Nạp laser | Bíp ngắn 1 kHz, 50 ms |
 | Bắn | "Piu": quét 2 kHz → 500 Hz trong 200 ms |
 | Đổi mode | Hai tiếng bíp ngắn |
+| SOS | Morse · · · — — — · · · lặp lại, 1 kHz |
 | ATTACKED | Bíp 1.5 kHz, 125 ms, cùng nhịp 2 Hz với LED |
 | Được cứu | Ba nốt đi lên |
 | TERMINATED | Giai điệu đi xuống (lấy từ năm ngoái) |
@@ -243,7 +256,7 @@ STANDBY                 BATTLE                  ATTACKED                TERMINAT
   - USART1: RX từng byte, TX xong một đoạn.
 - Không gọi I2C, `HAL_Delay` hay UART blocking trong ISR.
 - `sprintf("%f")` cần bật `-u _printf_float` trong linker.
-- Cách chia file **[CẦN CHỐT]**: tùy yêu cầu nộp bài.
+- **Một file duy nhất `main.c`**, chia section rõ ràng: cấu hình và hằng số, driver ngoại vi (OLED, LED matrix, buzzer), UART, cảm biến, nút bấm, phát hiện lật, state machine, `main()`, init.
 
 ## 13. Bảng thời gian
 
@@ -262,5 +275,15 @@ STANDBY                 BATTLE                  ATTACKED                TERMINAT
 
 - Vào BATTLE khi board đang lật: sau 300 ms vào ATTACKED (đúng spec).
 - Double press ở STANDBY lúc đang có WARN: vẫn sang BATTLE.
+- Double press ở STANDBY lúc SOS đang bật: tắt SOS rồi sang BATTLE; quay về STANDBY thì SOS vẫn tắt.
 - Nhấn nút trong lúc nhạc hoặc hiệu ứng đang chạy: không ảnh hưởng, vì mọi thứ đều không chặn.
 - I2C ngoài (OLED, LED matrix) không cắm: hệ thống vẫn chạy; lỗi I2C bị bỏ qua sau timeout ngắn.
+
+## 15. Nhật ký quyết định
+
+| Ngày | Quyết định |
+|---|---|
+| 12/10/2026 | Mặt chip hướng lên là bình thường, úp xuống là bị tấn công |
+| 12/10/2026 | BATTLE không gửi telemetry định kỳ, chỉ gửi sự kiện |
+| 12/10/2026 | Single press ở STANDBY bật/tắt chế độ SOS (Morse, chữ SOS trên LED matrix và OLED) |
+| 12/10/2026 | Nộp bài chỉ bằng `main.c`, nên mọi code nằm trong một file |
