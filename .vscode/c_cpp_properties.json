@@ -1,0 +1,19 @@
+{
+  "configurations": [
+    {
+      "name": "STM32L4S5",
+      "includePath": [
+        "${workspaceFolder}/Core/Inc",
+        "${workspaceFolder}/Drivers/STM32L4xx_HAL_Driver/Inc",
+        "${workspaceFolder}/Drivers/STM32L4xx_HAL_Driver/Inc/Legacy",
+        "${workspaceFolder}/Drivers/CMSIS/Device/ST/STM32L4xx/Include",
+        "${workspaceFolder}/Drivers/CMSIS/Include",
+        "${workspaceFolder}/Drivers/BSP/B-L4S5I-IOT01"
+      ],
+      "defines": ["USE_HAL_DRIVER", "STM32L4S5xx", "DEBUG"],
+      "cStandard": "c11",
+      "intelliSenseMode": "gcc-arm"
+    }
+  ],
+  "version": 4
+}
