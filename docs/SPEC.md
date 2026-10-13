@@ -64,18 +64,27 @@ Bốn cổng I2C trên shield nối chung một bus (PB8/PB9).
 
 ---
 
-## 4. DIP switch: bảng cấu hình drone
+## 4. DIP switch: cấu hình drone và chế độ bắn
 
-SW6 là công tắc chuyển chế độ. DIP switch được đọc mỗi 200 ms.
+Ý nghĩa của DIP switch **phụ thuộc trạng thái**. Đọc mỗi 200 ms.
 
-| SW6 | SW1–SW3 | SW4 | SW5 |
+**Ở STANDBY: cấu hình drone** (chỉ chỉnh được ở STANDBY)
+
+| SW1–SW3 | SW4 | SW5 | SW6 |
 |---|---|---|---|
-| **Tắt** (cấu hình) | Số hiệu drone 0–7 (SW1 = bit 0) | Kiểu lắp: tắt = mặt chip hướng lên là bình thường; bật = Z+ hướng xuống đất (đúng chữ đề) | Im lặng (tắt buzzer, trừ SOS) |
-| **Bật** (chọn công suất) | Công suất laser = số của công tắc **cao nhất** đang bật trong SW1–SW5 (SW1 = 1/10 … SW5 = 5/10). Không công tắc nào bật = 5/10 | | |
+| Số hiệu drone 0–7 (SW1 = bit 0) | Kiểu lắp: tắt = mặt chip hướng lên là bình thường; bật = Z+ hướng xuống đất (đúng chữ đề) | Im lặng (tắt buzzer, trừ SOS) | **Khóa cấu hình**: bật thì SW1–SW5 không đổi cấu hình nữa |
 
-- Số hiệu và kiểu lắp chỉ đọc lúc khởi động. Khi SW6 bật, các giá trị cấu hình (gồm cả im lặng) giữ nguyên như lúc SW6 vừa được gạt lên.
-- Gạt công tắc lúc đang chạy thì báo `[EVT] Config: silent ON` hoặc `[EVT] Weapon power set to 3/10`.
-- **Không đọc được DIP switch** (chưa cắm, sai địa chỉ): số hiệu 0, chip hướng lên, không im lặng, công suất 5/10. Tức là hành vi đúng đề.
+**Ở BATTLE: chế độ bắn** (cấu hình đã được giữ nguyên từ STANDBY)
+
+| SW6 | Chế độ bắn |
+|---|---|
+| Tắt | **Đúng đề**: mỗi phát 5/10, bắn liên tục, không cooldown |
+| Bật | **Chọn công suất**: công tắc **số cao nhất** đang bật trong SW1–SW5 là công suất (SW1 = 1/10 … SW5 = 5/10, không công tắc nào bật = 5/10), có cooldown (mục 9) |
+
+- **Vì sao SW6 là khóa cấu hình ở STANDBY:** cùng một công tắc mang hai nghĩa. Nếu bạn gạt SW1–SW5 để chọn công suất trong BATTLE rồi về STANDBY, các vị trí đó sẽ bị đọc thành số hiệu và chế độ im lặng mới, gây đổi cấu hình ngoài ý muốn. SW6 bật thì cấu hình bị khóa, nên chỉnh công suất thoải mái mà không ảnh hưởng gì. Muốn chỉnh cấu hình thì về STANDBY, gạt SW6 tắt, chỉnh SW1–SW5.
+- Đổi cấu hình ở STANDBY thì báo `[EVT] Config: drone #5, mount chip-up, silent ON` và OLED cập nhật.
+- Đổi chế độ bắn ở BATTLE thì báo `[EVT] Weapon: rule mode 5/10` hoặc `[EVT] Weapon: power 3/10, cooldown 3 s`.
+- **Không đọc được DIP switch** (chưa cắm, sai địa chỉ): số hiệu 0, chip hướng lên, không im lặng, chế độ đúng đề.
 
 ---
 
@@ -85,7 +94,7 @@ SW6 là công tắc chuyển chế độ. DIP switch được đọc mỗi 200 m
 |---|---|---|---|
 | UART | | | `=== Drone #3 online === mount: chip-up, silent: OFF` |
 | I2C | Quét bus | | `[EVT] I2C bus: 0x03 0x04 0x3C 0x70` |
-| Pressure | Lưu `P0` làm mốc độ cao 0 m | | |
+| Pressure | Lưu `P0` (trung bình 10 lần đọc) làm mốc **độ cao 0 m** | | `[EVT] Altitude zero at 1008.52 hPa` |
 | Magnetometer | Lưu hướng hiện tại làm **hướng về phòng lab** | | `[EVT] Lab bearing registered: 237 deg` |
 | Hộp đen | Nếu flash còn hộp đen của lần bay trước | | `[EVT] Black box of Drone #3 recovered (18 records). Type BLACKBOX to read` |
 | LED matrix | Hiện số hiệu drone 1 s | Chữ số | |
@@ -105,7 +114,7 @@ SW6 là công tắc chuyển chế độ. DIP switch được đọc mỗi 200 m
 | Sound | **Nghe tiếng gầm** ("moans of the infected") | OLED: `ZOMBIES HEARD!` 2 s. LED matrix: mặt zombie 1 s. Buzzer bíp | `[EVT] Zombie moans detected (noise 63 %). Recommend BATTLE MODE` |
 | IR | **Tránh va chạm** | OLED: `OBSTACLE AHEAD`. LED matrix: dấu `!`. Buzzer bíp | `[EVT] Obstacle at close range, holding position` |
 | 5-way | Lên/xuống: đổi trang OLED (mục 13) | | |
-| PB single | **Báo cáo trinh sát** | OLED: `REPORT SENT` 1 s | `[REPORT] Drone #3: alt +2.1 m, hdg 237, habitat found 2x, moans heard 3x, zombies down 12` |
+| PB single | **Báo cáo trinh sát** gửi về Command Centre qua UART: tóm tắt chuyến trinh sát tới lúc đó | OLED: `REPORT SENT` 1 s | `[REPORT] Drone #3: alt +2.1 m, hdg 237, habitat found 2x, moans heard 3x, zombies down 12` |
 
 - Sự kiện sound và IR có thời gian chờ 3 s để không lặp.
 - Lật board trong STANDBY: không có tác dụng.
@@ -148,7 +157,7 @@ BATTLE không gửi telemetry định kỳ, chỉ gửi sự kiện.
 - Năng lượng tính theo đơn vị **1/10**, số nguyên 0–10. Mỗi single press **+3/10** *(đề)*.
 - **Công suất mỗi phát** `p`:
   - SW6 tắt (chế độ đúng đề): `p = 5` *(đề)*.
-  - SW6 bật: `p` = 1–5 theo DIP switch (mục 4).
+  - SW6 bật (chỉ có tác dụng ở BATTLE): `p` = 1–5 theo DIP switch (mục 4).
 - **Tự bắn** khi năng lượng ≥ `p` *(đề)*. Mỗi lần tự bắn chỉ **một phát**, trừ `p`. Năng lượng thừa để dành, tối đa 10/10.
 - **Cooldown** (chỉ khi SW6 bật): sau mỗi phát, chờ `p` giây mới được bắn tiếp. Riêng `p = 1` không có cooldown. Trong lúc cooldown vẫn nạp được. Hết cooldown mà đủ năng lượng thì tự bắn ngay vào vị trí tâm ngắm lúc đó.
   - Chế độ đúng đề (SW6 tắt) **không có cooldown**, vì đề yêu cầu đủ năng lượng là bắn ngay.
@@ -191,7 +200,10 @@ BATTLE không gửi telemetry định kỳ, chỉ gửi sự kiện.
 | M | Độ lớn từ trường | `uT` | 10.0 | 100.0 | Từ trường Trái Đất 25–65 µT; > 100 µT là nhiễu từ, la bàn sai |
 
 - Đổi đơn vị: A `mg × 9.80665 / 1000`; G `mdps / 1000`; M `mGauss / 10 = µT`.
-- Độ cao (chỉ OLED và báo cáo): `h = 44330 × (1 − (P/P0)^0.1903)` m.
+- **Độ cao** (chỉ OLED và báo cáo), mốc 0 m là `P0` lúc khởi động: `h = 44330 × (1 − (P/P0)^0.1903)` m. Gần mặt đất, 0.1 hPa ≈ 0.85 m.
+  - Áp suất đọc về luôn dao động vài phần trăm hPa. Để số không nhảy: lọc trung bình trượt, rồi chỉ cập nhật **áp suất hiển thị** khi giá trị đã lọc lệch khỏi nó ≥ **0.1 hPa**. Độ cao tính từ áp suất hiển thị đó, nên đứng yên thì độ cao đứng yên, nâng board lên khoảng 1 m mới đổi.
+  - Áp suất khí quyển cũng tự trôi theo thời tiết (khoảng 0.1–0.5 hPa mỗi giờ), nên sau lâu độ cao có thể lệch vài mét. Lệnh `HOME` đặt lại mốc 0 m.
+  - Dòng `[TLM]` vẫn gửi áp suất thật (P), đúng yêu cầu của đề.
 - **Khoảng tìm nơi ở** (khác ngưỡng an toàn): 20–32 °C, 40–70 %RH, ánh sáng ≥ 30 %. Chuẩn tiện nghi ASHRAE hẹp hơn (khoảng 30–60 %RH); ta nới rộng để demo được trong phòng lab có máy lạnh ở Singapore.
 
 ---
@@ -199,7 +211,7 @@ BATTLE không gửi telemetry định kỳ, chỉ gửi sự kiện.
 ## 12. La bàn về phòng lab
 
 - Hướng (heading) = `atan2` của từ trường ngang, có **bù nghiêng** bằng accelerometer (roll/pitch), đơn vị độ 0–359, theo kiểu lắp ở SW4.
-- **Hướng về phòng lab** = hướng của drone lúc khởi động (drone được đăng ký ở phòng lab, mũi hướng về phòng lab). Lệnh `HOME` đăng ký lại.
+- **Hướng về phòng lab** = hướng của drone lúc khởi động (drone được đăng ký ở phòng lab, mũi hướng về phòng lab). Lệnh `HOME` đăng ký lại cả hướng về lab lẫn mốc độ cao 0 m.
 - LED matrix ở STANDBY: mũi tên 8 hướng chỉ `lab_bearing − heading`.
 - **Hiệu chuẩn** (nhiễu từ cứng của board làm la bàn lệch): lệnh `CALIB`. Xoay board nằm ngang đủ 1–2 vòng trong 10 s, board lấy min/max của trục X, Y làm offset. OLED hiện `CALIBRATING… ROTATE`. Kết quả dùng tới lần reset sau.
 
@@ -262,20 +274,24 @@ Framebuffer 1 KB trong RAM, mỗi vòng lặp chỉ đẩy một trang (page) th
 1. Ghi hộp đen vào flash (mục 15).
 2. `[EVT] Drone #3: no rescue. Black box saved. Self-destructing. Cutting all communication.`
 3. OLED, LED matrix, buzzer như bảng trên. Tắt LED2, tắt UART và các ngắt, MCU vào Standby mode. Chỉ RESET thoát được.
-4. **Chế độ huấn luyện** (lệnh `TRAINING ON`): thay vì cắt liên lạc, báo `[EVT] TRAINING: drone #3 would self-destruct now. Restarting in 3 s` rồi tự khởi động lại. Hộp đen vẫn được ghi.
+4. **Thoát TERMINATED:** chỉ bằng nút **RESET** đen trên board (hoặc rút cắm nguồn). Board khởi động lại từ đầu, vào STANDBY như một drone mới xuất kích. Đề yêu cầu "terminate the program and cut off all communication", nên không có lệnh hay nút nào khác đánh thức drone được.
+5. **Chế độ huấn luyện** (lệnh `TRAINING ON`): thay vì cắt liên lạc, báo `[EVT] TRAINING: drone #3 would self-destruct now. Restarting in 3 s` rồi tự khởi động lại. Hộp đen vẫn được ghi.
 
 ---
 
 ## 15. Hộp đen (black box)
 
-- Trong lúc bay, drone ghi **32 sự kiện gần nhất** vào RAM (bộ đệm vòng). Mỗi bản ghi gồm thời điểm, loại sự kiện, mode và vài số liệu: vị trí bắn và số ô dọn, mức ồn, nhiệt độ, `Az` lúc bị lật…
-- Sự kiện được ghi: đổi mode, nạp, bắn, nghe tiếng gầm, IR, tìm thấy nơi ở, vượt ngưỡng, bị lật, được cứu, tự hủy.
-- **Chỉ khi tự hủy**, toàn bộ bộ đệm cùng số hiệu drone được ghi **một lần** vào **trang flash cuối cùng** (cách xa vùng code, code ≈ 90 KB, flash 2 MB), có mã kiểm tra.
-- Lần khởi động sau: báo có hộp đen. Lệnh `BLACKBOX` in ra từng dòng:
+- Hộp đen ghi **từng chuyến xuất kích**: bắt đầu khi **vào BATTLE** (xóa sạch bản ghi cũ, cả trong RAM lẫn trong flash), ghi tới khi về STANDBY hoặc tự hủy.
+- Ghi **32 sự kiện gần nhất** vào RAM (bộ đệm vòng). Mỗi bản ghi gồm thời điểm, loại sự kiện, mode và vài số liệu: vị trí bắn và số ô dọn, công suất, mức ồn, `Az` lúc bị lật…
+- Sự kiện được ghi: vào BATTLE, nạp, bắn, tiếng gầm, IR, quá 75 %, đổi chế độ bắn, bị lật, được cứu, về STANDBY, tự hủy.
+- **Khi tự hủy**, bộ đệm cùng số hiệu drone được ghi **một lần** vào **trang flash cuối cùng** (cách xa vùng code ≈ 90 KB trong 2 MB flash), có mã kiểm tra. Nhờ vậy nó sống sót qua RESET và mất điện.
+- Lệnh `BLACKBOX` chỉ dùng ở **STANDBY**. Ở TERMINATED thì UART đã bị cắt nên không nhận lệnh được; cách đọc là nhấn RESET, board vào STANDBY, rồi gõ `BLACKBOX`.
+  - Nếu flash có hộp đen của drone đã tự hủy: in hộp đen đó. Lúc khởi động cũng báo `[EVT] Black box of Drone #3 recovered (18 records). Type BLACKBOX to read`.
+  - Nếu không: in chuyến BATTLE gần nhất đang có trong RAM (chuyến kết thúc bình thường).
+- Ví dụ:
   `[BBOX] t=41.2s BATTLE  FIRE p=5 at (3,2), 7 cells cleared`
   `[BBOX] t=44.8s BATTLE  FLIPPED Az=-9.7 m/s^2`
   `[BBOX] t=54.8s ATTACKED  SELF-DESTRUCT (no rescue)`
-- `BLACKBOX CLEAR` xóa trang flash đó.
 
 ---
 
@@ -308,10 +324,10 @@ Board tự echo và vẽ lại dòng đang gõ khi có tin nhắn mới (TeraTer
 | `CHARGE` | Như single press | BATTLE |
 | `RESCUE` | Cứu drone | ATTACKED |
 | `MUTE ON\|OFF` | Tắt hoặc bật buzzer (SOS vẫn kêu) | Mọi lúc |
-| `HOME` | Đăng ký lại hướng về phòng lab | STANDBY |
+| `HOME` | Đăng ký lại hướng về phòng lab và mốc độ cao 0 m | STANDBY |
 | `CALIB` | Hiệu chuẩn la bàn 10 s | STANDBY |
 | `TRAINING ON\|OFF` | Chế độ huấn luyện (mục 14) | Mọi lúc |
-| `BLACKBOX` / `BLACKBOX CLEAR` | Đọc hoặc xóa hộp đen | Mọi lúc |
+| `BLACKBOX` | Đọc hộp đen (mục 15) | STANDBY |
 | `I2CSCAN`, `I2CDUMP`, `I2CADDR` | **Chỉ dùng lúc phát triển**, xóa trước khi nộp | Mọi lúc |
 
 ---
@@ -356,3 +372,6 @@ Board tự echo và vẽ lại dòng đang gõ khi có tin nhắn mới (TeraTer
 | 13/10 | Bắn một phát mỗi lần; vùng nổ và âm thanh theo công suất; cooldown `p` giây (trừ `p = 1`), chỉ khi SW6 bật |
 | 13/10 | LED matrix = bản đồ lây nhiễm; OLED = buồng lái. Lây 1 ô/3 s, 3 ổ ban đầu, quá 75 % chỉ báo, bản đồ xóa khi về STANDBY |
 | 13/10 | Chế độ huấn luyện chuyển thành lệnh `TRAINING ON/OFF` |
+| 13/10 | DIP: ở STANDBY là cấu hình (SW6 = khóa cấu hình), ở BATTLE là chế độ bắn (SW6 tắt = đúng đề, bật = chọn công suất + cooldown) |
+| 13/10 | Hộp đen ghi từng chuyến từ lúc vào BATTLE; `BLACKBOX` chỉ ở STANDBY; thoát TERMINATED bằng RESET |
+| 13/10 | Độ cao: mốc 0 m = `P0` lúc khởi động; chỉ đổi khi áp suất lọc lệch ≥ 0.1 hPa; `HOME` đặt lại mốc |
