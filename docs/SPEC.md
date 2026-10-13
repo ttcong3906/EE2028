@@ -1,324 +1,358 @@
-# EE2028 A2 — The Last of EE2028: Spec chốt
+# EE2028 A2 — The Last of EE2028: Spec v2
 
 Tài liệu này là "hợp đồng" giữa bạn và mình: code viết đúng theo đây, muốn đổi hành vi thì sửa file này trước.
-Các chỗ đề bài để ngỏ đã chốt ngày 12/10/2026 (xem mục 15). Toàn bộ code nằm trong **một file `Core/Src/main.c`**.
+Toàn bộ code nằm trong **một file `Core/Src/main.c`**. Lịch sử quyết định ở mục 17.
+
+**Câu chuyện chung:** mỗi module gắn vào một giai đoạn trong vòng đời nhiệm vụ mà đề đã cho sẵn:
+xuất kích (DIP switch cấu hình drone trong đội) → **trinh sát** ở STANDBY (6 cảm biến, la bàn về phòng lab, tìm nơi ở cho người, nghe tiếng zombie) → **chiến đấu** ở BATTLE (bản đồ lây nhiễm, ngắm bằng 5-way, chọn công suất laser) → **bị hạ** ở The Last of EE2028 (SOS, chờ cứu) → **tự hủy** (cắt liên lạc, hộp đen được giữ lại để điều tra).
+
+Ký hiệu *(đề)* = yêu cầu bắt buộc của đề bài. Phần còn lại là tính năng thêm.
 
 ---
 
 ## 1. Phần cứng
 
-| Thiết bị | Kết nối | Ghi chú |
+| Thiết bị | Kết nối | Vai trò |
 |---|---|---|
-| Board | B-L4S5I-IOT01A (STM32L4S5VI) | |
-| LED2 (xanh lá) | PB14 | `BSP_LED_*` |
-| User button B1 | PC13, EXTI13, cạnh xuống | Chung IRQ `EXTI15_10` |
-| HTS221 (T, H) / LPS22HB (P) / LSM6DSL (A, G) / LIS3MDL (M) | I2C2 nội bộ qua BSP | |
-| LSM6DSL INT1 | PD11, EXTI11, cạnh lên | Dùng cho phát hiện lật (6D) |
-| UART tới PC | USART1 PB6/PB7 (ST-LINK VCP) | 115200 8N1 |
-| OLED SSD1306 128x64 | I2C1 PB8 (D15 SCL) / PB9 (D14 SDA), addr 0x3C | Ngoài, dùng lại từ năm ngoái |
-| LED matrix 8x8 HT16K33 | Cùng I2C1, addr 0x70 | Ngoài, dùng lại từ năm ngoái |
-| Buzzer | PB1, cổng Grove **D6**, PWM TIM3_CH4 | Ngoài, dùng lại từ năm ngoái |
-| IR reflective sensor | PC5, cổng Grove **A0**, input số | "Zombie radar" tầm gần |
-| Light sensor v1.2 | PC4, cổng Grove **A1**, ADC1_IN13 | Chế độ tàng hình ban đêm |
-| Sound sensor | PC3, cổng Grove **A2**, ADC1_IN4 | Phát hiện tiếng zombie gầm |
-| 5-way switch, 6-pos DIP switch | Cổng Grove I2C | Cả hai mặc định địa chỉ 0x03, phải đổi một cái (mục 16) |
+| Board | B-L4S5I-IOT01A (STM32L4S5VI), clock 4 MHz MSI mặc định | |
+| LED2 (xanh lá) | PB14 | Báo mode *(đề)* |
+| User button B1 | PC13, EXTI13, cả hai cạnh | Nút chính *(đề)* |
+| HTS221 (T, H), LPS22HB (P), LSM6DSL (A, G), LIS3MDL (M) | I2C2 nội bộ qua BSP | 6 cảm biến *(đề)*, la bàn, phát hiện lật |
+| LSM6DSL INT1 | PD11, EXTI11 | Ngắt 6D khi đổi hướng |
+| UART tới PC | USART1 PB6/PB7 (ST-LINK VCP), 115200 8N1 | Command Centre *(đề)* |
+| OLED 0.96" 128x64 | Cổng Grove I2C, addr 0x3C | Buồng lái |
+| Red LED Matrix 8x8 (HT16K33) | Cổng Grove **I2C**, addr 0x70 | Bản đồ / la bàn |
+| Buzzer | Cổng Grove **D6** (PB1, TIM3_CH4 PWM) | Âm thanh |
+| IR reflective sensor | Cổng Grove **A0** (PC5, input số) | Tránh va chạm / zombie áp sát |
+| Light sensor v1.2 | Cổng Grove **A1** (PC4, ADC1_IN13) | Tìm nơi ở cho người |
+| Sound sensor | Cổng Grove **A2** (PC3, ADC1_IN4) | Nghe tiếng zombie gầm |
+| 5-way switch | Cổng Grove I2C, addr 0x03 | Chuyển trang OLED / ngắm bắn |
+| 6-pos DIP switch | Cổng Grove I2C, addr 0x04 (sau khi đổi, mục 15) | Cấu hình drone / chọn công suất |
 
-Bốn cổng I2C trên shield nối chung một bus (PB8/PB9). LED matrix phải cắm vào cổng **I2C**, không phải cổng UART.
+Bốn cổng I2C trên shield nối chung một bus (PB8/PB9).
 
 ---
 
 ## 2. Trạng thái hệ thống
 
 ```
-            power on
-               │
-               ▼
-        ┌─────────────┐   double    ┌─────────────┐
-        │   STANDBY   │ ──────────► │   BATTLE    │◄─────────┐
-        │             │ ◄────────── │             │          │ double (rescue)
-        └─────────────┘   double    └──────┬──────┘          │ hoặc lệnh RESCUE
-                                           │ lật ngửa ≥ 300 ms│
-                                           ▼                  │
-                                    ┌─────────────┐           │
-                                    │  ATTACKED   │───────────┘
-                                    │ (Last of …) │
-                                    └──────┬──────┘
-                                           │ hết 10 s
-                                           ▼
-                                    ┌─────────────┐
-                                    │ TERMINATED  │  (không thoát được, chỉ reset)
-                                    └─────────────┘
+  power on ─► BOOT ─► STANDBY ◄──double──► BATTLE ◄────────────┐
+                     (trinh sát)          (chiến đấu)          │ double / RESCUE
+                                              │ lật ≥ 300 ms   │
+                                              ▼                │
+                                          ATTACKED ────────────┘
+                                     (The Last of EE2028)
+                                              │ hết 10 s
+                                              ▼
+                                         TERMINATED  (chỉ RESET mới thoát)
 ```
 
 ---
 
-## 3. Nút bấm
+## 3. Nút bấm B1 *(đề: phải đọc bằng ngắt)*
 
-- Ngắt EXTI13 chỉ ghi thời điểm và đếm số lần nhấn. Không UART, không I2C trong ISR.
-- **Debounce:** bỏ qua cạnh đến trong vòng **50 ms** sau cạnh được chấp nhận trước đó.
-- **Double press:** lần nhấn thứ hai đến **< 500 ms** sau lần đầu. Xử lý ngay khi nhận lần thứ hai.
-- **Single press:** sau lần nhấn đầu, đủ **500 ms** mà không có lần thứ hai. Vì vậy single luôn trễ khoảng 0.5 s (đúng theo định nghĩa của đề).
-- Lần nhấn thứ ba sau một double sẽ bắt đầu một chuỗi mới.
+- Ngắt EXTI13 bắt cả cạnh nhấn và cạnh nhả, chỉ ghi thời điểm. Không UART, không I2C trong ISR.
+- **Debounce:** một lần nhấn chỉ được tính khi nút đã nhả ổn định ≥ 30 ms và cách lần nhấn trước ≥ 50 ms. Giữ nút bao lâu cũng chỉ là một lần.
+- **Double press:** lần thứ hai < 500 ms sau lần đầu, xử lý ngay. **Single press:** đủ 500 ms không có lần thứ hai.
 
 | Trạng thái | Single | Double |
 |---|---|---|
-| STANDBY | Bật / tắt **chế độ SOS** | Sang BATTLE (tắt SOS nếu đang bật) |
-| BATTLE | Nạp laser +3/10 | Về STANDBY |
-| ATTACKED | Bỏ qua | Được cứu, về BATTLE |
-| TERMINATED | Bỏ qua (UART đã tắt) | Bỏ qua |
+| STANDBY | Gửi **báo cáo trinh sát** (đề cho phép tự chọn) | Sang BATTLE *(đề)* |
+| BATTLE | Nạp laser +3/10 *(đề)* | Về STANDBY *(đề)* |
+| ATTACKED | Bỏ qua *(đề)* | Được cứu, về BATTLE *(đề)* |
+| TERMINATED | Bỏ qua | Bỏ qua |
 
 ---
 
-## 4. Hành vi từng trạng thái
+## 4. DIP switch: bảng cấu hình drone
 
-### STANDBY
-- Khi vào: gửi `Entering STANDBY MODE` một lần.
-- Mỗi **1 s**: đọc cả 6 cảm biến.
-  - Tất cả trong ngưỡng: gửi 1 dòng `[TLM]`.
-  - Có cảm biến vượt ngưỡng: **không** gửi `[TLM]`, thay bằng một dòng `[WARN]` cho mỗi cảm biến vi phạm.
-- LED2: sáng liên tục.
-- Không kiểm tra lật trong STANDBY.
+SW6 là công tắc chuyển chế độ. DIP switch được đọc mỗi 200 ms.
 
-#### Chế độ SOS (chức năng tự chọn cho single press ở STANDBY)
-- Single press: bật SOS, gửi `[EVT] SOS ON - distress beacon active`. Single press lần nữa: tắt SOS, gửi `[EVT] SOS OFF`.
-- Khi SOS bật:
-  - Buzzer phát mã Morse **· · · — — — · · ·** lặp lại (dot 100 ms, dash 300 ms, nghỉ trong ký tự 100 ms, giữa ký tự 300 ms, giữa hai lần lặp 700 ms).
-  - LED matrix hiện lần lượt chữ **S**, **O**, **S**, đồng bộ với chữ đang phát Morse.
-  - OLED dòng cuối nhấp nháy `*** SOS ACTIVE ***`.
-  - Mỗi 1 s gửi thêm `[SOS] Distress signal. Requesting extraction.` sau dòng TLM/WARN.
-- Telemetry, giám sát ngưỡng và LED2 sáng liên tục vẫn chạy bình thường, đúng yêu cầu của STANDBY.
-- Double press (sang BATTLE) tự tắt SOS. `MUTE ON` chỉ tắt tiếng, hình SOS vẫn hiện.
+| SW6 | SW1–SW3 | SW4 | SW5 |
+|---|---|---|---|
+| **Tắt** (cấu hình) | Số hiệu drone 0–7 (SW1 = bit 0) | Kiểu lắp: tắt = mặt chip hướng lên là bình thường; bật = Z+ hướng xuống đất (đúng chữ đề) | Im lặng (tắt buzzer, trừ SOS) |
+| **Bật** (chọn công suất) | Công suất laser = số của công tắc **cao nhất** đang bật trong SW1–SW5 (SW1 = 1/10 … SW5 = 5/10). Không công tắc nào bật = 5/10 | | |
 
-### BATTLE (không bị tấn công)
-- Khi vào: gửi `Entering BATTLE MODE` và một dòng `[STAT]`.
-- **Không gửi telemetry định kỳ**, chỉ gửi sự kiện (nạp, bắn, đổi mode). Muốn xem trạng thái thì gõ `STATUS`.
-- LED2: nháy **1 Hz** (đảo trạng thái mỗi 500 ms).
-- Laser: xem mục 5.
-- Kiểm tra lật: xem mục 6.
-
-### ATTACKED ("The Last of EE2028")
-- Khi vào: gửi `[EVT] Drone flipped! Entering The Last of EE2028`, bắt đầu đếm 10 s.
-- Mỗi **1 s** (lần đầu gửi ngay): `[ATTACK] Drone Was Attacked! Rescue in N s`.
-- LED2: nháy **2 Hz** (đảo trạng thái mỗi 250 ms).
-- Double press hoặc lệnh UART `RESCUE` trong 10 s: gửi `[EVT] Rescued!`, về BATTLE. Năng lượng laser giữ nguyên.
-- Sau khi được cứu, phát hiện lật chỉ **kích hoạt lại khi drone đã lật về tư thế bình thường**, để tránh vừa cứu xong lại bị tấn công ngay.
-- Hết 10 s: chuyển TERMINATED.
-
-### TERMINATED
-1. Gửi `[EVT] No rescue. Drone self-destructing. Cutting all communication. Goodbye.`
-2. OLED hiện màn hình cuối, LED matrix hiện dấu X, buzzer chơi giai điệu kết thúc (khoảng 2 s).
-3. Tắt LED2, `HAL_UART_DeInit`, tắt mọi ngắt, cho MCU vào **Standby mode** (low-power). OLED và LED matrix vẫn giữ hình cuối vì chúng có RAM riêng.
-4. Chỉ thoát được bằng nút RESET.
+- Số hiệu và kiểu lắp chỉ đọc lúc khởi động. Khi SW6 bật, các giá trị cấu hình (gồm cả im lặng) giữ nguyên như lúc SW6 vừa được gạt lên.
+- Gạt công tắc lúc đang chạy thì báo `[EVT] Config: silent ON` hoặc `[EVT] Weapon power set to 3/10`.
+- **Không đọc được DIP switch** (chưa cắm, sai địa chỉ): số hiệu 0, chip hướng lên, không im lặng, công suất 5/10. Tức là hành vi đúng đề.
 
 ---
 
-## 5. Laser gun
+## 5. Khởi động
 
-- Năng lượng lưu theo đơn vị **phần mười**, kiểu số nguyên `0..10`.
-- Single press trong BATTLE: `+3`, rồi nếu `>= 5` thì **tự bắn**, `-5`.
-- Chuỗi từ 0: 0 → 3 → 6 (bắn) → 1 → 4 → 7 (bắn) → 2 → 5 (bắn) → 0. Không bao giờ vượt 7/10, nhưng vẫn kẹp tối đa 10 cho chắc.
-- Năng lượng **giữ nguyên** khi về STANDBY và khi bị tấn công.
-- Đếm tổng số phát đã bắn để hiện lên OLED.
+| Module | Làm gì | Hiển thị | UART |
+|---|---|---|---|
+| UART | | | `=== Drone #3 online === mount: chip-up, silent: OFF` |
+| I2C | Quét bus | | `[EVT] I2C bus: 0x03 0x04 0x3C 0x70` |
+| Pressure | Lưu `P0` làm mốc độ cao 0 m | | |
+| Magnetometer | Lưu hướng hiện tại làm **hướng về phòng lab** | | `[EVT] Lab bearing registered: 237 deg` |
+| Hộp đen | Nếu flash còn hộp đen của lần bay trước | | `[EVT] Black box of Drone #3 recovered (18 records). Type BLACKBOX to read` |
+| LED matrix | Hiện số hiệu drone 1 s | Chữ số | |
+| Buzzer | Tiếng khởi động ngắn | | |
+| | Vào STANDBY | | `Entering STANDBY MODE` *(đề)* |
+
+---
+
+## 6. STANDBY: trinh sát
+
+| Module | Làm gì | Hiển thị | UART |
+|---|---|---|---|
+| 6 cảm biến *(đề)* | Đọc mỗi 1 s, so ngưỡng (mục 11) | OLED trang 1 | `[TLM] T: … M: …` đúng 6 trường, hoặc `[WARN] …` khi vượt ngưỡng *(đề)* |
+| LED2 *(đề)* | Sáng liên tục | | |
+| Magnetometer + accel | **La bàn về phòng lab**: hướng có bù nghiêng | LED matrix: mũi tên chỉ về phòng lab, xoay theo khi xoay board. OLED: `HDG 237 SW` | |
+| Light + T + H | **Tìm nơi ở cho người**: 20–32 °C, 40–70 %RH, ánh sáng ≥ 30 %, thỏa liên tục 3 s | OLED: `HABITAT: FOUND`. LED matrix: hình ngôi nhà 2 s. Buzzer: hai nốt chuông | `[EVT] Possible human habitat found: T 26.1 C, H 58 %RH, light 62 %`; khi mất: `[EVT] Habitat conditions lost` |
+| Sound | **Nghe tiếng gầm** ("moans of the infected") | OLED: `ZOMBIES HEARD!` 2 s. LED matrix: mặt zombie 1 s. Buzzer bíp | `[EVT] Zombie moans detected (noise 63 %). Recommend BATTLE MODE` |
+| IR | **Tránh va chạm** | OLED: `OBSTACLE AHEAD`. LED matrix: dấu `!`. Buzzer bíp | `[EVT] Obstacle at close range, holding position` |
+| 5-way | Lên/xuống: đổi trang OLED (mục 13) | | |
+| PB single | **Báo cáo trinh sát** | OLED: `REPORT SENT` 1 s | `[REPORT] Drone #3: alt +2.1 m, hdg 237, habitat found 2x, moans heard 3x, zombies down 12` |
+
+- Sự kiện sound và IR có thời gian chờ 3 s để không lặp.
+- Lật board trong STANDBY: không có tác dụng.
+
+---
+
+## 7. BATTLE: chiến đấu
+
+| Module | Làm gì | Hiển thị | UART |
+|---|---|---|---|
+| Khi vào | Tạo bản đồ mới với 3 ổ nhiễm ngẫu nhiên | | `Entering BATTLE MODE` *(đề)* + `[STAT]` |
+| LED2 *(đề)* | Nháy 1 Hz | | |
+| LED matrix | **Bản đồ lây nhiễm** (mục 8) + tâm ngắm | | |
+| OLED | **Buồng lái** (mục 13) | | |
+| PB single *(đề)* | Nạp +3/10, đủ năng lượng thì tự bắn (mục 9) | | `[EVT] LASER charged: 3/10 -> 6/10` |
+| 5-way | 4 hướng: dời tâm ngắm 1 ô, giữ nghiêng thì chạy liên tục. Giữa: nhảy tới ô nhiễm gần nhất | Tâm ngắm nhấp nháy | |
+| Sound | Tiếng gầm → **ổ nhiễm mới** ở một ô mép bản đồ | OLED dòng 7: `MOANS: NEW OUTBREAK` | `[EVT] Zombie moans: new outbreak at (0,5)` |
+| IR | Vật áp sát → ô ngay trước drone (hàng 7, cột 3–4) bị nhiễm, nhấp nháy. Buzzer báo động | OLED dòng 7: `RADAR: ZOMBIE CLOSE!` | `[EVT] ZOMBIE AT CLOSE RANGE!` |
+| Accel *(đề)* | Phát hiện lật theo kiểu lắp ở SW4 (mục 10) | | → ATTACKED |
+| PB double *(đề)* | Về STANDBY, **bản đồ bị xóa** | | `Entering STANDBY MODE` |
+
+BATTLE không gửi telemetry định kỳ, chỉ gửi sự kiện.
+
+---
+
+## 8. Bản đồ lây nhiễm (LED matrix trong BATTLE)
+
+- 8x8 là khu vực phía trước drone nhìn từ trên xuống. Drone ở giữa cạnh dưới. Hàng 0 xa nhất, hàng 7 gần nhất.
+- Ô sáng = khu bị zombie chiếm. Bắt đầu với **3 ổ nhiễm** ngẫu nhiên ở hàng 0–3.
+- **Lây lan:** mỗi **3 s**, một ô nhiễm ngẫu nhiên lây sang một ô kề (trên, dưới, trái, phải) chưa nhiễm.
+- **Tâm ngắm:** nhấp nháy 4 Hz. Ô dưới tâm ngắm đang nhiễm thì OLED báo `TARGET!`.
+- **Quá 75 % (≥ 48/64 ô):** chỉ báo `[EVT] AREA OVERRUN (52/64)` và OLED `OVERRUN!`. Không có hậu quả khác, vì theo đề drone chỉ bị hạ khi bị lật. Báo lại khi xuống dưới 75 % rồi vượt lần nữa.
+- Rời BATTLE (về STANDBY) thì bản đồ bị xóa. Vào lại BATTLE thì tạo bản đồ mới.
+- Khi bị tấn công thì bản đồ dừng lây lan. Được cứu thì quay lại bản đồ cũ.
+
+---
+
+## 9. Laser gun
+
+- Năng lượng tính theo đơn vị **1/10**, số nguyên 0–10. Mỗi single press **+3/10** *(đề)*.
+- **Công suất mỗi phát** `p`:
+  - SW6 tắt (chế độ đúng đề): `p = 5` *(đề)*.
+  - SW6 bật: `p` = 1–5 theo DIP switch (mục 4).
+- **Tự bắn** khi năng lượng ≥ `p` *(đề)*. Mỗi lần tự bắn chỉ **một phát**, trừ `p`. Năng lượng thừa để dành, tối đa 10/10.
+- **Cooldown** (chỉ khi SW6 bật): sau mỗi phát, chờ `p` giây mới được bắn tiếp. Riêng `p = 1` không có cooldown. Trong lúc cooldown vẫn nạp được. Hết cooldown mà đủ năng lượng thì tự bắn ngay vào vị trí tâm ngắm lúc đó.
+  - Chế độ đúng đề (SW6 tắt) **không có cooldown**, vì đề yêu cầu đủ năng lượng là bắn ngay.
+- **Vùng nổ** quanh tâm ngắm, các ô nhiễm trong vùng bị dọn sạch:
+
+| `p` | Vùng nổ | Âm thanh |
+|---|---|---|
+| 1 | 1 ô | "piuuu": cao, ngắn, trong |
+| 2–3 | Chữ thập 5 ô | "pew": trung |
+| 4–5 | Vuông 3x3, 9 ô | "BOOM": tiếng ù trầm quét 400 → 80 Hz, có rung |
+
 - Thông báo:
   - `[EVT] LASER charged: 3/10 -> 6/10`
-  - `[EVT] LASER FIRED! Zombie down. Energy 6/10 -> 1/10`
+  - `[EVT] LASER FIRED (5/10, BOOM) at (3,2): 7 cells cleared. Energy 6/10 -> 1/10. Zombies down: 19`
+  - `[EVT] LASER FIRED (1/10) at (3,2): missed, no zombies there. Energy 3/10 -> 2/10`
+  - Hết cooldown: `[EVT] Laser ready` kèm tiếng tách nhỏ.
+- LED matrix: tia quét từ drone tới tâm ngắm (4 khung × 50 ms), rồi vùng nổ nháy sáng 150 ms trước khi tắt.
 
 ---
 
-## 6. Phát hiện lật ngửa
+## 10. Phát hiện lật *(đề)*
 
-- **Chiều quy ước (đã chốt):** mặt có gắn chip hướng lên trên là **bình thường** (`Az ≈ +9.8 m/s²`); úp mặt chip xuống là **bị tấn công** (`Az ≈ −9.8 m/s²`).
-  - Đề viết "Z+ hướng xuống đất khi bay", nghĩa đen là ngược lại. Ta chọn cách trên cho demo tự nhiên. Khi TA hỏi thì giải thích: board được gắn trên drone sao cho mặt chip hướng lên.
-  - Code có `#define FLIP_SIGN` để đổi chiều trong một dòng nếu cần.
-- **Cơ chế:**
-  - Chức năng nhận diện hướng **6D** có sẵn trong LSM6DSL, ngưỡng góc 60°, báo ngắt qua INT1 (PD11, EXTI11) khi hướng thay đổi.
-  - LSM6DSL là IMU chứa cả gyroscope lẫn accelerometer. Lúc demo có thể giải thích dòng "gyroscope detects upside-down" trong đề là chip IMU đó phát hiện.
-  - Ngắt chỉ bật cờ. Main loop xác nhận bằng cách đọc `Az`, và phải **giữ tư thế lật ≥ 300 ms** mới vào ATTACKED, để lắc mạnh không bị nhận nhầm.
-  - Dự phòng: trong BATTLE vẫn đọc `Az` mỗi 100 ms, phòng khi lỡ ngắt.
-- **Ngưỡng:** "lật" khi thành phần trọng lực trên trục Z theo chiều ngược lại lớn hơn `0.5 g` (khoảng nghiêng hơn 120° so với bình thường).
+- **Kiểu lắp** theo SW4: mặc định (tắt) mặt chip hướng lên là bình thường (`Az ≈ +9.8 m/s²`). Bật SW4 thì đảo chiều, đúng nghĩa đen "Z+ hướng xuống đất".
+- Chức năng **6D** trong LSM6DSL (ngưỡng 60°) báo ngắt INT1 khi hướng thay đổi. Main loop xác nhận bằng `Az` và phải **giữ tư thế lật ≥ 300 ms**. Dự phòng: đọc `Az` mỗi 100 ms.
+- "Lật" khi trọng lực trên trục Z theo chiều ngược lại lớn hơn 0.5 g.
+- LSM6DSL là IMU chứa cả gyroscope và accelerometer. Đó là cách hiểu câu "gyroscope detects upside-down" của đề: gyro chỉ đo tốc độ quay nên không tự biết được úp hay ngửa.
+- Sau khi được cứu, drone phải được lật ngửa lại một lần mới có thể bị tấn công tiếp.
 
 ---
 
-## 7. Cảm biến, đơn vị và ngưỡng
+## 11. Cảm biến, đơn vị và ngưỡng *(đề)*
 
-| Ký hiệu | Đại lượng gửi đi | Đơn vị | Ngưỡng thấp | Ngưỡng cao | Lý do vật lý |
+| Ký hiệu | Đại lượng | Đơn vị | Thấp | Cao | Lý do vật lý |
 |---|---|---|---|---|---|
-| T | Nhiệt độ | `C` | 10.0 | 35.0 | Khoảng hoạt động an toàn của pin Li-ion và điện tử; ngoài khoảng này hiệu suất pin giảm |
-| P | Áp suất | `hPa` | 950.0 | 1040.0 | 950 hPa ≈ 540 m trên mực nước biển (trần bay); trên 1040 hPa gần mức kỷ lục ở mực nước biển, coi là lỗi cảm biến |
+| T | Nhiệt độ | `C` | 10.0 | 35.0 | Khoảng hoạt động an toàn của pin Li-ion và điện tử |
+| P | Áp suất | `hPa` | 950.0 | 1040.0 | 950 hPa ≈ 540 m (trần bay); trên 1040 hPa gần kỷ lục ở mực nước biển, coi là lỗi |
 | H | Độ ẩm tương đối | `%RH` | 20.0 | 80.0 | Trên 80 % dễ đọng sương trên mạch; dưới 20 % dễ tĩnh điện |
-| A | Độ lớn gia tốc √(x²+y²+z²) | `m/s^2` | 3.0 | 15.0 | < 0.3 g là rơi tự do; > 1.5 g là va chạm hoặc cơ động gắt (cảm biến đặt dải ±2 g) |
+| A | Độ lớn gia tốc √(x²+y²+z²) | `m/s^2` | 3.0 | 15.0 | < 0.3 g là rơi tự do; > 1.5 g là va chạm (cảm biến đặt dải ±2 g) |
 | G | Độ lớn vận tốc góc | `dps` | — | 300.0 | Quay > 300 °/s là mất kiểm soát |
-| M | Độ lớn từ trường | `uT` | 10.0 | 100.0 | Từ trường Trái Đất 25–65 µT; > 100 µT là nhiễu từ mạnh, la bàn sai |
+| M | Độ lớn từ trường | `uT` | 10.0 | 100.0 | Từ trường Trái Đất 25–65 µT; > 100 µT là nhiễu từ, la bàn sai |
 
-- Đổi đơn vị:
-  - A: `mg × 9.80665 / 1000`.
-  - G: `mdps / 1000` (BSP đã nhân độ nhạy, **không** nhân thêm 0.07).
-  - M: `mGauss / 10 = µT`.
-- Các ngưỡng là giá trị khởi điểm, chỉnh lại theo đo thực tế sau lần test đầu. Có thể đổi lúc chạy bằng lệnh `SET`, tiện khi TA muốn xem vi phạm.
-- **Hiển thị thêm (chỉ OLED):** độ cao tương đối, tính từ áp suất lúc khởi động `P0`:
-  `h = 44330 × (1 − (P/P0)^0.1903)` m.
+- Đổi đơn vị: A `mg × 9.80665 / 1000`; G `mdps / 1000`; M `mGauss / 10 = µT`.
+- Độ cao (chỉ OLED và báo cáo): `h = 44330 × (1 − (P/P0)^0.1903)` m.
+- **Khoảng tìm nơi ở** (khác ngưỡng an toàn): 20–32 °C, 40–70 %RH, ánh sáng ≥ 30 %. Chuẩn tiện nghi ASHRAE hẹp hơn (khoảng 30–60 %RH); ta nới rộng để demo được trong phòng lab có máy lạnh ở Singapore.
 
 ---
 
-## 8. UART: định dạng tin nhắn
+## 12. La bàn về phòng lab
 
-Mỗi dòng có tiền tố `[TAG]` để người đọc trên TeraTerm vẫn dễ hiểu, còn dashboard Python tách được không cần đoán. Kết thúc bằng `\r\n`.
+- Hướng (heading) = `atan2` của từ trường ngang, có **bù nghiêng** bằng accelerometer (roll/pitch), đơn vị độ 0–359, theo kiểu lắp ở SW4.
+- **Hướng về phòng lab** = hướng của drone lúc khởi động (drone được đăng ký ở phòng lab, mũi hướng về phòng lab). Lệnh `HOME` đăng ký lại.
+- LED matrix ở STANDBY: mũi tên 8 hướng chỉ `lab_bearing − heading`.
+- **Hiệu chuẩn** (nhiễu từ cứng của board làm la bàn lệch): lệnh `CALIB`. Xoay board nằm ngang đủ 1–2 vòng trong 10 s, board lấy min/max của trục X, Y làm offset. OLED hiện `CALIBRATING… ROTATE`. Kết quả dùng tới lần reset sau.
+
+---
+
+## 13. OLED 128x64 (21 ký tự × 8 dòng)
+
+**STANDBY:** 5-way lên/xuống đổi trang.
+
+```
+Trang 1: cảm biến         Trang 2: điều hướng        Trang 3: nhiệm vụ
++---------------------+   +---------------------+   +---------------------+
+|DRONE#3  STANDBY     |   |DRONE#3  NAVIGATION  |   |DRONE#3  MISSION     |
+|T 25.3C  H 61.2%     |   |HDG 237 SW           |   |HABITAT FOUND: 2x    |
+|P 1008.5hPa          |   |LAB BEARING 012 N    |   |MOANS HEARD:   3x    |
+|ALT   +3.2 m         |   |TURN  +135 deg       |   |ZOMBIES DOWN: 12     |
+|A  9.79 m/s2         |   |ALT   +3.2 m         |   |SHOTS FIRED:   6     |
+|G  1.25 dps          |   |LIGHT 62%            |   |FLIGHT 03:12         |
+|M  45.3 uT           |   |NOISE  8%            |   |                     |
+|STATUS: ALL NORMAL   |   |HABITAT: SEARCHING   |   |1x REPORT 2x BATTLE  |
++---------------------+   +---------------------+   +---------------------+
+```
+Dòng cuối trang 1: `STATUS: ALL NORMAL` / `WARN: T HI, M HI` / sự kiện mới nhất trong 2 s (`ZOMBIES HEARD!`, `OBSTACLE AHEAD`, `HABITAT: FOUND`).
+
+**BATTLE (buồng lái):**
+```
++---------------------+
+|DRONE#3  HDG 237 SW  |
+|LASER [######----] 6 |
+|POWER 5/10   BOOM    |   ← lúc cooldown: COOLDOWN 3.2s
+|AIM (3,2)   TARGET!  |
+|INFECTED 18/64  28%  |
+|ZOMBIES DOWN: 12     |
+|RADAR: CLEAR         |   ← sự kiện mới nhất / OVERRUN!
+|1x CHARGE 2x STANDBY |
++---------------------+
+```
+
+**ATTACKED:** `!! UNDER ATTACK !!`, `DRONE #3`, `RESCUE IN  7 s`, `DOUBLE-PRESS TO RESCUE`.
+**TERMINATED:** `DRONE #3 LOST`, `COMMS OFFLINE`, `BLACK BOX SAVED`, `press RESET`.
+
+Framebuffer 1 KB trong RAM, mỗi vòng lặp chỉ đẩy một trang (page) thay đổi.
+
+---
+
+## 14. LED matrix, buzzer, ATTACKED, TERMINATED
+
+| Trạng thái | LED matrix | Buzzer |
+|---|---|---|
+| Khởi động | Số hiệu drone 1 s | Tiếng khởi động |
+| STANDBY | Mũi tên la bàn; sự kiện: nhà / zombie / `!` trong 1–2 s | Chuông nơi ở, bíp cảnh báo |
+| BATTLE | Bản đồ lây nhiễm + tâm ngắm | Nạp: bíp ngắn; bắn: piuuu / pew / BOOM; báo động khi IR |
+| ATTACKED | Chữ S-O-S theo nhịp Morse | **Morse SOS liên tục, kêu cả khi im lặng** |
+| Được cứu | Mặt cười 1 s | Ba nốt đi lên |
+| TERMINATED | Dấu X | Giai điệu kết thúc |
+
+**ATTACKED** *(đề)*: LED2 nháy 2 Hz. Khi vào: `[EVT] Drone #3 flipped! The Last of EE2028`. Mỗi 1 s: `[ATTACK] Drone #3 Was Attacked! Rescue in 7 s`. Double press hoặc lệnh `RESCUE` trong 10 s: `[EVT] Drone #3 rescued!`, về BATTLE. Single press, 5-way, IR, sound, light đều bị bỏ qua.
+
+**TERMINATED** *(đề)*:
+1. Ghi hộp đen vào flash (mục 15).
+2. `[EVT] Drone #3: no rescue. Black box saved. Self-destructing. Cutting all communication.`
+3. OLED, LED matrix, buzzer như bảng trên. Tắt LED2, tắt UART và các ngắt, MCU vào Standby mode. Chỉ RESET thoát được.
+4. **Chế độ huấn luyện** (lệnh `TRAINING ON`): thay vì cắt liên lạc, báo `[EVT] TRAINING: drone #3 would self-destruct now. Restarting in 3 s` rồi tự khởi động lại. Hộp đen vẫn được ghi.
+
+---
+
+## 15. Hộp đen (black box)
+
+- Trong lúc bay, drone ghi **32 sự kiện gần nhất** vào RAM (bộ đệm vòng). Mỗi bản ghi gồm thời điểm, loại sự kiện, mode và vài số liệu: vị trí bắn và số ô dọn, mức ồn, nhiệt độ, `Az` lúc bị lật…
+- Sự kiện được ghi: đổi mode, nạp, bắn, nghe tiếng gầm, IR, tìm thấy nơi ở, vượt ngưỡng, bị lật, được cứu, tự hủy.
+- **Chỉ khi tự hủy**, toàn bộ bộ đệm cùng số hiệu drone được ghi **một lần** vào **trang flash cuối cùng** (cách xa vùng code, code ≈ 90 KB, flash 2 MB), có mã kiểm tra.
+- Lần khởi động sau: báo có hộp đen. Lệnh `BLACKBOX` in ra từng dòng:
+  `[BBOX] t=41.2s BATTLE  FIRE p=5 at (3,2), 7 cells cleared`
+  `[BBOX] t=44.8s BATTLE  FLIPPED Az=-9.7 m/s^2`
+  `[BBOX] t=54.8s ATTACKED  SELF-DESTRUCT (no rescue)`
+- `BLACKBOX CLEAR` xóa trang flash đó.
+
+---
+
+## 16. UART
 
 ### Board → PC
+Mỗi dòng có tiền tố `[TAG]`, kết thúc `\r\n`. Các thông báo đổi mode giữ đúng chữ của đề.
 
-| Tag | Khi nào | Ví dụ |
-|---|---|---|
-| (không tag) | Đổi mode, đúng chữ đề yêu cầu | `Entering STANDBY MODE` |
-| `[TLM]` | STANDBY, mỗi 1 s, khi bình thường | `[TLM] T: 25.31 C, P: 1008.52 hPa, H: 61.20 %RH, A: 9.79 m/s^2, G: 1.25 dps, M: 45.30 uT, L: 63 %, N: 8 %` (L = ánh sáng, N = độ ồn, % thang ADC) |
-| `[WARN]` | STANDBY, mỗi 1 s, mỗi dòng một vi phạm | `[WARN] T: 36.20 C, exceeds threshold of 35.00 C` / `[WARN] H: 15.10 %RH, below threshold of 20.00 %RH` |
-| `[EVT]` | Sự kiện | `[EVT] LASER FIRED! Zombie down. Energy 6/10 -> 1/10` |
-| `[ATTACK]` | ATTACKED, mỗi 1 s | `[ATTACK] Drone Was Attacked! Rescue in 7 s` |
-| `[STAT]` | Khi đổi mode và khi có lệnh `STATUS` | `[STAT] MODE: BATTLE, LASER: 6/10, SHOTS: 2, ALT: 3.2 m` |
-| `[CMD]` | Trả lời lệnh | `[CMD] OK T_HIGH = 30.00` / `[CMD] ERR unknown command 'FOO'` |
+| Tag | Khi nào |
+|---|---|
+| (không tag) | `Entering STANDBY MODE`, `Entering BATTLE MODE` *(đề)* |
+| `[TLM]` | STANDBY mỗi 1 s, **đúng 6 trường** *(đề)* |
+| `[WARN]` | STANDBY mỗi 1 s, mỗi dòng một vi phạm *(đề)* |
+| `[ATTACK]` | ATTACKED mỗi 1 s *(đề)* |
+| `[EVT]` | Sự kiện |
+| `[STAT]` | Đổi mode và lệnh `STATUS` |
+| `[REPORT]` | Báo cáo trinh sát (single press STANDBY) |
+| `[BBOX]` | Nội dung hộp đen |
+| `[CMD]` | Trả lời lệnh |
 
-### PC → Board (UART hai chiều)
-
-Nhận bằng ngắt, từng byte vào ring buffer; main loop ghép dòng khi gặp `\r` hoặc `\n`. Không phân biệt hoa thường.
-
-**Console:** board tự echo ký tự đang gõ (TeraTerm phải **tắt** *Local echo*). Gõ ký tự đầu tiên sẽ hiện dấu nhắc `> `. Khi có tin nhắn mới trong lúc đang gõ, board xóa dòng đang gõ (`\r` + `ESC[K`), in tin nhắn, rồi in lại `> ` cùng phần lệnh đang gõ dở ở dòng dưới, nên telemetry không chen vào giữa lệnh. Backspace xóa ký tự, ESC hủy cả dòng.
+### PC → Board
+Board tự echo và vẽ lại dòng đang gõ khi có tin nhắn mới (TeraTerm **tắt** Local echo). Backspace xóa, ESC hủy dòng.
 
 | Lệnh | Tác dụng | Hợp lệ ở |
 |---|---|---|
-| `HELP` | Liệt kê lệnh | Mọi trạng thái (trừ TERMINATED) |
-| `STATUS` | Gửi một dòng `[STAT]` | Mọi trạng thái |
-| `THRESH` | In toàn bộ ngưỡng hiện tại | Mọi trạng thái |
-| `SET <KEY> <value>` | Đổi ngưỡng; KEY ∈ `T_LOW T_HIGH P_LOW P_HIGH H_LOW H_HIGH A_LOW A_HIGH G_HIGH M_LOW M_HIGH` | Mọi trạng thái |
-| `MODE STANDBY` / `MODE BATTLE` | Giống double press | STANDBY / BATTLE |
-| `CHARGE` | Giống single press | BATTLE |
+| `HELP`, `STATUS`, `THRESH` | Hướng dẫn, trạng thái, ngưỡng | Mọi lúc |
+| `SET <T\|P\|H\|A\|G\|M>_<LOW\|HIGH> <v>` | Đổi ngưỡng an toàn | Mọi lúc |
+| `SET NOISE <pct>` | Mức ồn coi là tiếng gầm | Mọi lúc |
+| `MODE STANDBY` / `MODE BATTLE` | Như double press | STANDBY / BATTLE |
+| `CHARGE` | Như single press | BATTLE |
 | `RESCUE` | Cứu drone | ATTACKED |
-| `SOS ON` / `SOS OFF` | Bật hoặc tắt chế độ SOS | STANDBY |
-| `MUTE ON` / `MUTE OFF` | Tắt hoặc bật buzzer | Mọi trạng thái |
-| `SET NOISE <pct>` / `SET DARK <pct>` | Đổi mức kích hoạt của sound / light sensor | Mọi trạng thái |
-| `I2CSCAN` | Liệt kê địa chỉ I2C đang có trên bus | Mọi trạng thái |
-| `I2CDUMP <addr> <cmd> <n>` | Gửi 1 byte lệnh, đọc n byte (hex) để dò giao thức module | Mọi trạng thái |
-| `I2CADDR <old> <new>` | Đổi địa chỉ module Seeed multi-switch (lệnh 0xC0) | Mọi trạng thái |
-
-Lệnh không hợp lệ ở trạng thái hiện tại thì trả `[CMD] ERR not allowed in <MODE>`.
-
-### Truyền đi
-- TX dùng ring buffer cộng `HAL_UART_Transmit_IT`, không chặn main loop.
+| `MUTE ON\|OFF` | Tắt hoặc bật buzzer (SOS vẫn kêu) | Mọi lúc |
+| `HOME` | Đăng ký lại hướng về phòng lab | STANDBY |
+| `CALIB` | Hiệu chuẩn la bàn 10 s | STANDBY |
+| `TRAINING ON\|OFF` | Chế độ huấn luyện (mục 14) | Mọi lúc |
+| `BLACKBOX` / `BLACKBOX CLEAR` | Đọc hoặc xóa hộp đen | Mọi lúc |
+| `I2CSCAN`, `I2CDUMP`, `I2CADDR` | **Chỉ dùng lúc phát triển**, xóa trước khi nộp | Mọi lúc |
 
 ---
 
-## 9. OLED 128x64 (21 ký tự × 8 dòng, font 5x7)
+## 17. Kiến trúc, thời gian, tình huống biên
 
-Vẽ vào framebuffer 1 KB trong RAM, chỉ đẩy những dòng thay đổi lên OLED. Cập nhật khi có sự kiện, cộng thêm mỗi 1 s ở STANDBY và ATTACKED.
-
-```
-STANDBY                 BATTLE                  ATTACKED                TERMINATED
-+---------------------+ +---------------------+ +---------------------+ +---------------------+
-|== STANDBY MODE ==   | |=== BATTLE MODE ===  | |!! UNDER ATTACK !!   | |                     |
-|T 25.3C  H 61.2%     | |                     | |                     | |    DRONE  LOST      |
-|P 1008.5hPa          | |LASER                | |  RESCUE WINDOW      | |                     |
-|ALT   +3.2 m         | |[######----]  6/10   | |       7 s           | |  COMMS  OFFLINE     |
-|A  9.79 m/s2         | |                     | |                     | |                     |
-|G  1.25 dps          | |SHOTS FIRED: 2       | |DOUBLE-PRESS TO      | |  press RESET to     |
-|M 45.3uT L 63% N  8% | |RADAR: CLEAR         | |      RESCUE         | |     reboot          |
-|STATUS: ALL NORMAL   | |1x CHARGE 2x STANDBY | |                     | |                     |
-+---------------------+ +---------------------+ +---------------------+ +---------------------+
-```
-
-- Dòng cuối STANDBY khi có vi phạm: `WARN: T HIGH, M HIGH`.
-- Khi SOS bật, dòng cuối STANDBY nhấp nháy `*** SOS ACTIVE ***` (ưu tiên hơn dòng WARN).
-
----
-
-## 10. LED matrix 8x8
-
-| Lúc | Hình |
-|---|---|
-| STANDBY, bình thường | Vòng tròn "radar" |
-| STANDBY, có vi phạm | Dấu chấm than |
-| STANDBY, SOS bật | Chữ S, O, S lần lượt, đồng bộ với Morse (ưu tiên hơn dấu chấm than) |
-| BATTLE | Thanh năng lượng: số cột sáng = năng lượng (0–7); một chấm ở cột 5 hàng trên cùng đánh dấu ngưỡng bắn |
-| Khi bắn | Hiệu ứng tia laser quét ngang, 5 khung × 60 ms, rồi về thanh năng lượng |
-| ATTACKED | Dấu chấm than nháy 2 Hz, cùng nhịp LED2 |
-| Vừa được cứu | Mặt cười trong 1 s |
-| TERMINATED | Dấu X |
-
----
-
-## 11. Buzzer (PWM TIM3_CH4, không chặn)
-
-| Sự kiện | Âm thanh |
-|---|---|
-| Nạp laser | Bíp ngắn 1 kHz, 50 ms |
-| Bắn | "Piu": quét 2 kHz → 500 Hz trong 200 ms |
-| Đổi mode | Hai tiếng bíp ngắn |
-| SOS | Morse · · · — — — · · · lặp lại, 1 kHz |
-| ATTACKED | Bíp 1.5 kHz, 125 ms, cùng nhịp 2 Hz với LED |
-| Được cứu | Ba nốt đi lên |
-| TERMINATED | Giai điệu đi xuống (lấy từ năm ngoái) |
-
-`MUTE ON` tắt toàn bộ âm thanh.
-
----
-
-## 12. Kiến trúc phần mềm
-
-- Siêu vòng lặp không chặn, mọi định thời dựa trên `HAL_GetTick()` qua `elapsed(since, ms)`.
-- ISR chỉ ghi cờ hoặc dữ liệu vào biến `volatile` hay ring buffer:
-  - EXTI13: nút bấm.
-  - EXTI11: LSM6DSL INT1.
-  - USART1: RX từng byte, TX xong một đoạn.
-- Không gọi I2C, `HAL_Delay` hay UART blocking trong ISR.
-- `sprintf("%f")` cần bật `-u _printf_float` trong linker.
-- **Một file duy nhất `main.c`**, chia section rõ ràng: cấu hình và hằng số, driver ngoại vi (OLED, LED matrix, buzzer), UART, cảm biến, nút bấm, phát hiện lật, state machine, `main()`, init.
-
-## 13. Bảng thời gian
+- Siêu vòng lặp không chặn, định thời bằng `HAL_GetTick()`. ISR chỉ ghi cờ hoặc dữ liệu (EXTI13 nút, EXTI11 IMU, USART1 RX/TX).
+- ADC chạy trực tiếp bằng thanh ghi (module ADC của HAL tắt trong conf, mà chỉ nộp `main.c`).
+- Module ngoài không cắm hoặc không trả lời thì bỏ qua, hệ thống vẫn chạy đúng đề.
 
 | Hạng mục | Giá trị |
 |---|---|
-| Đọc cảm biến và gửi TLM/WARN | 1000 ms |
-| Debounce nút | 50 ms |
-| Cửa sổ double press | < 500 ms |
-| LED BATTLE / ATTACKED | đảo mỗi 500 ms / 250 ms |
-| Kiểm tra lật (dự phòng) | 100 ms |
+| Cảm biến + TLM/WARN | 1000 ms |
+| Debounce nút / cửa sổ double | 30–50 ms / < 500 ms |
+| LED BATTLE / ATTACKED | đảo mỗi 500 / 250 ms |
 | Giữ lật để xác nhận | 300 ms |
-| Tin `[ATTACK]` | 1000 ms |
-| Cửa sổ cứu hộ | 10000 ms |
+| Cửa sổ cứu hộ | 10 s |
+| Đọc DIP / 5-way | 200 ms / 30 ms |
+| Lây nhiễm | 1 ô mỗi 3 s |
+| Cooldown laser | `p` giây (chỉ khi SW6 bật, `p ≥ 2`) |
+| Chờ giữa sự kiện sound/IR | 3 s |
+| Cập nhật la bàn | 100 ms |
 
-## 14. Tình huống biên
+---
 
-- Vào BATTLE khi board đang lật: sau 300 ms vào ATTACKED (đúng spec).
-- Double press ở STANDBY lúc đang có WARN: vẫn sang BATTLE.
-- Double press ở STANDBY lúc SOS đang bật: tắt SOS rồi sang BATTLE; quay về STANDBY thì SOS vẫn tắt.
-- Nhấn nút trong lúc nhạc hoặc hiệu ứng đang chạy: không ảnh hưởng, vì mọi thứ đều không chặn.
-- I2C ngoài (OLED, LED matrix) không cắm: hệ thống vẫn chạy; lỗi I2C bị bỏ qua sau timeout ngắn.
-
-## 15b. Cảm biến Grove bổ sung
-
-ADC chạy trực tiếp bằng thanh ghi (module ADC của HAL đang tắt trong file conf, mà chỉ nộp `main.c`). Clock ADC = HCLK, 12-bit, thời gian lấy mẫu 247.5 chu kỳ.
-
-| Cảm biến | Cách đọc | Sự kiện |
-|---|---|---|
-| IR (A0) | Đọc chân mỗi 20 ms, đổi trạng thái khi 3 mẫu liên tiếp giống nhau. Mức "có vật" mặc định là LOW (`IR_DETECT_LEVEL`) | BATTLE: `[EVT] ZOMBIE AT CLOSE RANGE!`, LED matrix hiện mặt zombie 1 s, buzzer báo, OLED dòng 6 `RADAR: ZOMBIE CLOSE!`. STANDBY: `[EVT] Obstacle at close range` |
-| Sound (A2) | Lấy mẫu mỗi 2 ms, độ ồn = giá trị lớn nhất trong cửa sổ 100 ms, tính % thang ADC | Vượt `SET NOISE` (mặc định 50 %): BATTLE `[EVT] Zombie roar detected nearby!` + icon + buzzer; STANDBY `[EVT] Loud noise detected` |
-| Light (A1) | Mỗi 50 ms, lọc trung bình trượt | Dưới `SET DARK` (mặc định 15 %) liên tục 500 ms: **stealth mode ON**. OLED và LED matrix giảm sáng, tắt mọi âm thanh trừ SOS, báo động bị tấn công và nhạc tự hủy. Sáng lại trên 25 % trong 500 ms: OFF |
-
-- Sự kiện IR và sound có thời gian chờ 2 s để không bị lặp. Ở ATTACKED và TERMINATED không phát sự kiện.
-- `STATUS` có thêm dòng `[STAT] IR: ..., LIGHT: .. %, NOISE: .. %, STEALTH: ...` để chỉnh ngưỡng.
-- Lúc khởi động, board quét bus I2C và in `[EVT] I2C bus: 0x03 0x3C 0x70 ...`.
-
-## 16. 5-way switch và DIP switch (bước sau)
-
-Hai module này cùng firmware Seeed multi-switch, mặc định cùng địa chỉ **0x03** nên không dùng chung bus được ngay. Cách đổi một lần (địa chỉ lưu trong module):
-1. Chỉ để DIP switch trên bus (rút 5-way ra), gõ `I2CADDR 03 04`.
-2. Cắm 5-way lại, `I2CSCAN` phải thấy cả 0x03 và 0x04.
-3. Dùng `I2CDUMP` để xem byte trả về khi bấm hoặc gạt, rồi mới viết phần điều khiển.
-
-## 15. Nhật ký quyết định
+## 18. Nhật ký quyết định
 
 | Ngày | Quyết định |
 |---|---|
-| 12/10/2026 | Mặt chip hướng lên là bình thường, úp xuống là bị tấn công |
-| 12/10/2026 | BATTLE không gửi telemetry định kỳ, chỉ gửi sự kiện |
-| 12/10/2026 | Single press ở STANDBY bật/tắt chế độ SOS (Morse, chữ SOS trên LED matrix và OLED) |
-| 12/10/2026 | Nộp bài chỉ bằng `main.c`, nên mọi code nằm trong một file |
-| 13/10/2026 | Cắm lại module: buzzer D6, IR A0, light A1, sound A2, LED matrix vào cổng I2C |
-| 13/10/2026 | Thêm IR "zombie radar", sound "roar", light "stealth mode", công cụ I2C |
+| 12/10 | Mặt chip hướng lên là bình thường (nay chọn được bằng SW4) |
+| 12/10 | BATTLE không gửi telemetry định kỳ |
+| 12/10 | Chỉ nộp `main.c` |
+| 13/10 | Cắm module: buzzer D6, IR A0, light A1, sound A2, LED matrix vào cổng I2C |
+| 13/10 | `[TLM]` giữ đúng 6 trường |
+| 13/10 | Giữ lệnh UART `MODE`/`CHARGE`/`RESCUE`; công cụ I2C chỉ dùng lúc phát triển |
+| 13/10 | Bỏ stealth mode; light sensor dùng để tìm nơi ở cho người |
+| 13/10 | Câu chuyện chung theo vòng đời nhiệm vụ; mỗi module gắn vào một giai đoạn |
+| 13/10 | SOS chuyển sang ATTACKED, kêu cả khi im lặng; single press STANDBY = báo cáo trinh sát |
+| 13/10 | Thêm la bàn về phòng lab (magnetometer) |
+| 13/10 | Bỏ ý xóa vị trí phòng lab; giữ hộp đen |
+| 13/10 | DIP: SW6 chuyển chế độ cấu hình / chọn công suất; công suất lấy công tắc số cao nhất |
+| 13/10 | Bắn một phát mỗi lần; vùng nổ và âm thanh theo công suất; cooldown `p` giây (trừ `p = 1`), chỉ khi SW6 bật |
+| 13/10 | LED matrix = bản đồ lây nhiễm; OLED = buồng lái. Lây 1 ô/3 s, 3 ổ ban đầu, quá 75 % chỉ báo, bản đồ xóa khi về STANDBY |
+| 13/10 | Chế độ huấn luyện chuyển thành lệnh `TRAINING ON/OFF` |
