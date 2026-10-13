@@ -78,7 +78,7 @@ Bốn cổng I2C trên shield nối chung một bus (PB8/PB9).
 
 | SW6 | Chế độ bắn |
 |---|---|
-| Tắt | **Đúng đề**: mỗi phát 5/10, bắn liên tục, không cooldown |
+| Tắt | **Đúng đề**: mỗi phát 5/10, bắn liên tục, không cooldown. SW1–SW5 **không có tác dụng gì** |
 | Bật | **Chọn công suất**: công tắc **số cao nhất** đang bật trong SW1–SW5 là công suất (SW1 = 1/10 … SW5 = 5/10, không công tắc nào bật = 5/10), có cooldown (mục 9) |
 
 - **Vì sao SW6 là khóa cấu hình ở STANDBY:** cùng một công tắc mang hai nghĩa. Nếu bạn gạt SW1–SW5 để chọn công suất trong BATTLE rồi về STANDBY, các vị trí đó sẽ bị đọc thành số hiệu và chế độ im lặng mới, gây đổi cấu hình ngoài ý muốn. SW6 bật thì cấu hình bị khóa, nên chỉnh công suất thoải mái mà không ảnh hưởng gì. Muốn chỉnh cấu hình thì về STANDBY, gạt SW6 tắt, chỉnh SW1–SW5.
@@ -201,7 +201,7 @@ BATTLE không gửi telemetry định kỳ, chỉ gửi sự kiện.
 
 - Đổi đơn vị: A `mg × 9.80665 / 1000`; G `mdps / 1000`; M `mGauss / 10 = µT`.
 - **Độ cao** (chỉ OLED và báo cáo), mốc 0 m là `P0` lúc khởi động: `h = 44330 × (1 − (P/P0)^0.1903)` m. Gần mặt đất, 0.1 hPa ≈ 0.85 m.
-  - Áp suất đọc về luôn dao động vài phần trăm hPa. Để số không nhảy: lọc trung bình trượt, rồi chỉ cập nhật **áp suất hiển thị** khi giá trị đã lọc lệch khỏi nó ≥ **0.1 hPa**. Độ cao tính từ áp suất hiển thị đó, nên đứng yên thì độ cao đứng yên, nâng board lên khoảng 1 m mới đổi.
+  - Áp suất đọc về luôn dao động vài phần trăm hPa. Để số không nhảy: lọc trung bình trượt, rồi **làm tròn theo bậc 0.1 hPa tính từ P0**. Chỉ nhảy sang bậc mới khi giá trị đã lọc lệch khỏi bậc hiện tại hơn 0.06 hPa (có trễ, để không nhảy qua lại giữa hai bậc). Đứng yên thì độ cao đứng yên, nâng board lên khoảng 1 m mới đổi, mỗi bậc ≈ 0.85 m.
   - Áp suất khí quyển cũng tự trôi theo thời tiết (khoảng 0.1–0.5 hPa mỗi giờ), nên sau lâu độ cao có thể lệch vài mét. Lệnh `HOME` đặt lại mốc 0 m.
   - Dòng `[TLM]` vẫn gửi áp suất thật (P), đúng yêu cầu của đề.
 - **Khoảng tìm nơi ở** (khác ngưỡng an toàn): 20–32 °C, 40–70 %RH, ánh sáng ≥ 30 %. Chuẩn tiện nghi ASHRAE hẹp hơn (khoảng 30–60 %RH); ta nới rộng để demo được trong phòng lab có máy lạnh ở Singapore.
@@ -328,7 +328,7 @@ Board tự echo và vẽ lại dòng đang gõ khi có tin nhắn mới (TeraTer
 | `CALIB` | Hiệu chuẩn la bàn 10 s | STANDBY |
 | `TRAINING ON\|OFF` | Chế độ huấn luyện (mục 14) | Mọi lúc |
 | `BLACKBOX` | Đọc hộp đen (mục 15) | STANDBY |
-| `I2CSCAN`, `I2CDUMP`, `I2CADDR` | **Chỉ dùng lúc phát triển**, xóa trước khi nộp | Mọi lúc |
+| `I2CSCAN`, `I2CDUMP`, `I2CADDR`, `INPUTS` | **Chỉ dùng lúc phát triển** (`ENABLE_DEV_TOOLS 0` trước khi nộp). `INPUTS` in trạng thái thô của DIP và 5-way | Mọi lúc |
 
 ---
 
