@@ -17,7 +17,13 @@ Các chỗ đề bài để ngỏ đã chốt ngày 12/10/2026 (xem mục 15). T
 | UART tới PC | USART1 PB6/PB7 (ST-LINK VCP) | 115200 8N1 |
 | OLED SSD1306 128x64 | I2C1 PB8 (D15 SCL) / PB9 (D14 SDA), addr 0x3C | Ngoài, dùng lại từ năm ngoái |
 | LED matrix 8x8 HT16K33 | Cùng I2C1, addr 0x70 | Ngoài, dùng lại từ năm ngoái |
-| Buzzer thụ động | PB1 (D6), PWM TIM3_CH4 | Ngoài, dùng lại từ năm ngoái |
+| Buzzer | PB1, cổng Grove **D6**, PWM TIM3_CH4 | Ngoài, dùng lại từ năm ngoái |
+| IR reflective sensor | PC5, cổng Grove **A0**, input số | "Zombie radar" tầm gần |
+| Light sensor v1.2 | PC4, cổng Grove **A1**, ADC1_IN13 | Chế độ tàng hình ban đêm |
+| Sound sensor | PC3, cổng Grove **A2**, ADC1_IN4 | Phát hiện tiếng zombie gầm |
+| 5-way switch, 6-pos DIP switch | Cổng Grove I2C | Cả hai mặc định địa chỉ 0x03, phải đổi một cái (mục 16) |
+
+Bốn cổng I2C trên shield nối chung một bus (PB8/PB9). LED matrix phải cắm vào cổng **I2C**, không phải cổng UART.
 
 ---
 
@@ -163,7 +169,7 @@ Mỗi dòng có tiền tố `[TAG]` để người đọc trên TeraTerm vẫn d
 | Tag | Khi nào | Ví dụ |
 |---|---|---|
 | (không tag) | Đổi mode, đúng chữ đề yêu cầu | `Entering STANDBY MODE` |
-| `[TLM]` | STANDBY, mỗi 1 s, khi bình thường | `[TLM] T: 25.31 C, P: 1008.52 hPa, H: 61.20 %RH, A: 9.79 m/s^2, G: 1.25 dps, M: 45.30 uT` |
+| `[TLM]` | STANDBY, mỗi 1 s, khi bình thường | `[TLM] T: 25.31 C, P: 1008.52 hPa, H: 61.20 %RH, A: 9.79 m/s^2, G: 1.25 dps, M: 45.30 uT, L: 63 %, N: 8 %` (L = ánh sáng, N = độ ồn, % thang ADC) |
 | `[WARN]` | STANDBY, mỗi 1 s, mỗi dòng một vi phạm | `[WARN] T: 36.20 C, exceeds threshold of 35.00 C` / `[WARN] H: 15.10 %RH, below threshold of 20.00 %RH` |
 | `[EVT]` | Sự kiện | `[EVT] LASER FIRED! Zombie down. Energy 6/10 -> 1/10` |
 | `[ATTACK]` | ATTACKED, mỗi 1 s | `[ATTACK] Drone Was Attacked! Rescue in 7 s` |
@@ -187,6 +193,10 @@ Nhận bằng ngắt, từng byte vào ring buffer; main loop ghép dòng khi g�
 | `RESCUE` | Cứu drone | ATTACKED |
 | `SOS ON` / `SOS OFF` | Bật hoặc tắt chế độ SOS | STANDBY |
 | `MUTE ON` / `MUTE OFF` | Tắt hoặc bật buzzer | Mọi trạng thái |
+| `SET NOISE <pct>` / `SET DARK <pct>` | Đổi mức kích hoạt của sound / light sensor | Mọi trạng thái |
+| `I2CSCAN` | Liệt kê địa chỉ I2C đang có trên bus | Mọi trạng thái |
+| `I2CDUMP <addr> <cmd> <n>` | Gửi 1 byte lệnh, đọc n byte (hex) để dò giao thức module | Mọi trạng thái |
+| `I2CADDR <old> <new>` | Đổi địa chỉ module Seeed multi-switch (lệnh 0xC0) | Mọi trạng thái |
 
 Lệnh không hợp lệ ở trạng thái hiện tại thì trả `[CMD] ERR not allowed in <MODE>`.
 
@@ -208,7 +218,7 @@ STANDBY                 BATTLE                  ATTACKED                TERMINAT
 |ALT   +3.2 m         | |[######----]  6/10   | |       7 s           | |  COMMS  OFFLINE     |
 |A  9.79 m/s2         | |                     | |                     | |                     |
 |G  1.25 dps          | |SHOTS FIRED: 2       | |DOUBLE-PRESS TO      | |  press RESET to     |
-|M  45.3 uT           | |                     | |      RESCUE         | |     reboot          |
+|M 45.3uT L 63% N  8% | |RADAR: CLEAR         | |      RESCUE         | |     reboot          |
 |STATUS: ALL NORMAL   | |1x CHARGE 2x STANDBY | |                     | |                     |
 +---------------------+ +---------------------+ +---------------------+ +---------------------+
 ```
@@ -281,6 +291,27 @@ STANDBY                 BATTLE                  ATTACKED                TERMINAT
 - Nhấn nút trong lúc nhạc hoặc hiệu ứng đang chạy: không ảnh hưởng, vì mọi thứ đều không chặn.
 - I2C ngoài (OLED, LED matrix) không cắm: hệ thống vẫn chạy; lỗi I2C bị bỏ qua sau timeout ngắn.
 
+## 15b. Cảm biến Grove bổ sung
+
+ADC chạy trực tiếp bằng thanh ghi (module ADC của HAL đang tắt trong file conf, mà chỉ nộp `main.c`). Clock ADC = HCLK, 12-bit, thời gian lấy mẫu 247.5 chu kỳ.
+
+| Cảm biến | Cách đọc | Sự kiện |
+|---|---|---|
+| IR (A0) | Đọc chân mỗi 20 ms, đổi trạng thái khi 3 mẫu liên tiếp giống nhau. Mức "có vật" mặc định là LOW (`IR_DETECT_LEVEL`) | BATTLE: `[EVT] ZOMBIE AT CLOSE RANGE!`, LED matrix hiện mặt zombie 1 s, buzzer báo, OLED dòng 6 `RADAR: ZOMBIE CLOSE!`. STANDBY: `[EVT] Obstacle at close range` |
+| Sound (A2) | Lấy mẫu mỗi 2 ms, độ ồn = giá trị lớn nhất trong cửa sổ 100 ms, tính % thang ADC | Vượt `SET NOISE` (mặc định 50 %): BATTLE `[EVT] Zombie roar detected nearby!` + icon + buzzer; STANDBY `[EVT] Loud noise detected` |
+| Light (A1) | Mỗi 50 ms, lọc trung bình trượt | Dưới `SET DARK` (mặc định 15 %) liên tục 500 ms: **stealth mode ON**. OLED và LED matrix giảm sáng, tắt mọi âm thanh trừ SOS, báo động bị tấn công và nhạc tự hủy. Sáng lại trên 25 % trong 500 ms: OFF |
+
+- Sự kiện IR và sound có thời gian chờ 2 s để không bị lặp. Ở ATTACKED và TERMINATED không phát sự kiện.
+- `STATUS` có thêm dòng `[STAT] IR: ..., LIGHT: .. %, NOISE: .. %, STEALTH: ...` để chỉnh ngưỡng.
+- Lúc khởi động, board quét bus I2C và in `[EVT] I2C bus: 0x03 0x3C 0x70 ...`.
+
+## 16. 5-way switch và DIP switch (bước sau)
+
+Hai module này cùng firmware Seeed multi-switch, mặc định cùng địa chỉ **0x03** nên không dùng chung bus được ngay. Cách đổi một lần (địa chỉ lưu trong module):
+1. Chỉ để DIP switch trên bus (rút 5-way ra), gõ `I2CADDR 03 04`.
+2. Cắm 5-way lại, `I2CSCAN` phải thấy cả 0x03 và 0x04.
+3. Dùng `I2CDUMP` để xem byte trả về khi bấm hoặc gạt, rồi mới viết phần điều khiển.
+
 ## 15. Nhật ký quyết định
 
 | Ngày | Quyết định |
@@ -289,3 +320,5 @@ STANDBY                 BATTLE                  ATTACKED                TERMINAT
 | 12/10/2026 | BATTLE không gửi telemetry định kỳ, chỉ gửi sự kiện |
 | 12/10/2026 | Single press ở STANDBY bật/tắt chế độ SOS (Morse, chữ SOS trên LED matrix và OLED) |
 | 12/10/2026 | Nộp bài chỉ bằng `main.c`, nên mọi code nằm trong một file |
+| 13/10/2026 | Cắm lại module: buzzer D6, IR A0, light A1, sound A2, LED matrix vào cổng I2C |
+| 13/10/2026 | Thêm IR "zombie radar", sound "roar", light "stealth mode", công cụ I2C |
