@@ -111,7 +111,13 @@ extern uint8_t SENSOR_IO_Read(uint8_t Addr, uint8_t Reg);
 #define SOUND_WINDOW_MS         100U
 #define AUX_EVENT_COOLDOWN_MS   3000U
 #define HABITAT_HOLD_S          3
-#define SPREAD_MS               3000U
+#define WAVE_PAUSE_MS           2000U  /* AREA CLEARED -> next wave            */
+#define WAVE_SPREAD_START_MS    3000U  /* wave 1 spreads 1 cell per 3 s        */
+#define WAVE_SPREAD_STEP_MS     250U   /* each wave spreads 0.25 s faster      */
+#define WAVE_SPREAD_MIN_MS      1000U
+#define WAVE_MAX_SEEDS          12
+#define SOUND_GUARD_MS          200U   /* ignore the mic while/after buzzer    */
+#define BOOT_CHECK_MS           2500U  /* OLED self-test page at power-on      */
 #define CLOSE_BLINK_MS          2000U
 #define CROSSHAIR_BLINK_MS      125U   /* 4 Hz */
 #define EVENT_TEXT_MS           2000U
@@ -126,7 +132,8 @@ extern uint8_t SENSOR_IO_Read(uint8_t Addr, uint8_t Reg);
 #define G_MS2                   9.80665f
 #define FLIP_G_FRACTION         0.5f
 #define ALT_STEP_HPA            0.1f      /* altitude only moves per 0.1 hPa */
-#define SOUND_LOUD_PCT_DEF      50.0f
+#define SOUND_MARGIN_PCT        25.0f  /* roar = ambient baseline + 25 %       */
+#define SOUND_RECOVER_PCT       10.0f  /* re-arm below baseline + 10 %         */
 #define HAB_T_MIN               20.0f
 #define HAB_T_MAX               32.0f
 #define HAB_H_MIN               40.0f
@@ -137,7 +144,6 @@ extern uint8_t SENSOR_IO_Read(uint8_t Addr, uint8_t Reg);
 #define LASER_CHARGE_STEP       3
 #define LASER_RULE_COST         5
 #define LASER_MAX               10
-#define MAP_SEEDS               3
 #define MAP_OVERRUN_CELLS       48         /* 75 % of 64 */
 
 /* ============================================================================
@@ -471,6 +477,63 @@ static void oled_linef(uint8_t line, const char *fmt, ...)
     oled_line(line, buf);
 }
 
+/* 2x scaled text over two pages (12 px per character, 14 px tall). */
+static void oled_big(uint8_t page, uint8_t x, const char *text)
+{
+#if ENABLE_OLED
+    if (!oled_ok || page + 1U >= OLED_LINES) return;
+    char key[OLED_COLS + 1];
+    snprintf(key, sizeof(key), "\x01%c%s", (char)('0' + (x & 63U)), text);
+    if (strcmp(key, oled_text_cache[page]) == 0) return;
+    strcpy(oled_text_cache[page], key);
+    strcpy(oled_text_cache[page + 1U], "\x02");
+    memset(oled_fb[page], 0, 128);
+    memset(oled_fb[page + 1U], 0, 128);
+    for (const char *c = text; *c && x + 10U <= 128U; c++, x = (uint8_t)(x + 12U)) {
+        char ch = (*c < 32 || *c > 126) ? ' ' : *c;
+        const uint8_t *g = font5x7[ch - 32];
+        for (int col = 0; col < 5; col++) {
+            uint16_t v = 0;
+            for (int b = 0; b < 7; b++) if (g[col] & (1U << b)) v |= (uint16_t)(3U << (2 * b));
+            for (int k = 0; k < 2; k++) {
+                oled_fb[page][x + col * 2 + k]       = (uint8_t)(v & 0xFFU);
+                oled_fb[page + 1U][x + col * 2 + k]  = (uint8_t)(v >> 8);
+            }
+        }
+    }
+    oled_dirty |= (uint8_t)(3U << page);
+#else
+    (void)page; (void)x; (void)text;
+#endif
+}
+
+/* Two-page tall segmented bar (e.g. laser energy 0..10). */
+static void oled_bar(uint8_t page, int value, int total)
+{
+#if ENABLE_OLED
+    if (!oled_ok || page + 1U >= OLED_LINES || total <= 0) return;
+    char key[OLED_COLS + 1];
+    snprintf(key, sizeof(key), "\x03%d/%d", value, total);
+    if (strcmp(key, oled_text_cache[page]) == 0) return;
+    strcpy(oled_text_cache[page], key);
+    strcpy(oled_text_cache[page + 1U], "\x02");
+    memset(oled_fb[page], 0, 128);
+    memset(oled_fb[page + 1U], 0, 128);
+    int w = 120 / total;                       /* segment pitch */
+    for (int i = 0; i < total; i++) {
+        int x0 = 4 + i * w, x1 = x0 + w - 3;
+        for (int x = x0; x <= x1 && x < 128; x++) {
+            bool edge = (x == x0 || x == x1);
+            if (i < value || edge) { oled_fb[page][x] = 0xFC; oled_fb[page + 1U][x] = 0x3F; }
+            else                   { oled_fb[page][x] = 0x04; oled_fb[page + 1U][x] = 0x20; }
+        }
+    }
+    oled_dirty |= (uint8_t)(3U << page);
+#else
+    (void)page; (void)value; (void)total;
+#endif
+}
+
 static void oled_flush_step(void)
 {
 #if ENABLE_OLED
@@ -512,6 +575,7 @@ static const uint8_t GL_CROSS[8]   = {0x81,0x42,0x24,0x18,0x18,0x24,0x42,0x81};
 static const uint8_t GL_S[8]       = {0x3C,0x66,0x60,0x3C,0x06,0x66,0x3C,0x00};
 static const uint8_t GL_O[8]       = {0x3C,0x66,0x66,0x66,0x66,0x66,0x3C,0x00};
 static const uint8_t GL_ZOMBIE[8]  = {0x3C,0x7E,0xDB,0xFF,0xE7,0x7E,0x5A,0x42};
+static const uint8_t GL_CHECK[8]   = {0x00,0x01,0x03,0x06,0x8C,0xD8,0x70,0x20};
 static const uint8_t GL_HOUSE[8]   = {0x18,0x3C,0x7E,0xFF,0x42,0x5A,0x5A,0x7E};
 static const uint8_t GL_DIGIT[8][8] = {
     {0x3C,0x66,0x6E,0x76,0x66,0x66,0x3C,0x00}, {0x18,0x38,0x18,0x18,0x18,0x18,0x7E,0x00},
@@ -598,6 +662,7 @@ static const note_t SND_WARN[]    = { {1800,1800,80,0} };
 static const note_t SND_ALARM[]   = { {1500,1500,120,0},{0,0,60,0},{1500,1500,120,0} };
 static const note_t SND_HABITAT[] = { {1319,1319,120,0},{0,0,30,0},{1568,1568,220,0} };
 static const note_t SND_REPORT[]  = { {1200,1200,40,0},{0,0,30,0},{1600,1600,40,0} };
+static const note_t SND_VICTORY[] = { {1047,1047,100,0},{1319,1319,100,0},{1568,1568,100,0},{2093,2093,300,0} };
 static const note_t SND_RESCUE[]  = { {1047,1047,150,0},{1319,1319,150,0},{1568,1568,250,0} };
 static const note_t SND_GAMEOVER[]= { {1568,1568,300,0},{0,0,50,0},{1319,1319,300,0},{0,0,50,0},
                                       {1047,1047,300,0},{0,0,50,0},{784,784,700,0} };
@@ -608,6 +673,7 @@ static uint8_t  bz_len = 0, bz_idx = 0;
 static bool     bz_loop = false;
 static uint32_t bz_note_t0 = 0, bz_fx_t = 0;
 static uint16_t bz_cur_freq = 0;
+static uint32_t bz_tone_off_t = 0;     /* last time the buzzer went silent */
 
 /* Silent switch (SW5) or MUTE command silence everything except the SOS. */
 static bool bz_quiet(void)
@@ -620,6 +686,7 @@ static void tone_set(uint16_t f)
 #if ENABLE_BUZZER
     if (bz_quiet()) f = 0;
     if (f == bz_cur_freq) return;
+    if (f == 0 && bz_cur_freq != 0) bz_tone_off_t = HAL_GetTick();
     bz_cur_freq = f;
     if (f == 0) {
         __HAL_TIM_SET_COMPARE(&htim3, TIM_CHANNEL_4, 0);
@@ -730,14 +797,18 @@ static void bz_update(void)
 
 static volatile bool flip_irq = false;
 
+static bool sensors_ok = false;
+
 static void sensors_init(void)
 {
-    BSP_TSENSOR_Init();
-    BSP_HSENSOR_Init();
-    BSP_PSENSOR_Init();
-    BSP_ACCELERO_Init();
-    BSP_GYRO_Init();
-    BSP_MAGNETO_Init();
+    int err = 0;
+    err += (BSP_TSENSOR_Init()  != TSENSOR_OK);
+    err += (BSP_HSENSOR_Init()  != HSENSOR_OK);
+    err += (BSP_PSENSOR_Init()  != PSENSOR_OK);
+    err += (BSP_ACCELERO_Init() != ACCELERO_OK);
+    err += (BSP_GYRO_Init()     != GYRO_OK);
+    err += (BSP_MAGNETO_Init()  != MAGNETO_OK);
+    sensors_ok = (err == 0);
 
     /* LSM6DSL hardware orientation (6D) detection, 60 deg, routed to INT1. */
     uint8_t v;
@@ -892,7 +963,9 @@ static int turn_to_lab(void)
 #define ADC_CH_SOUND 4U    /* PC3 = ADC1_IN4  (Grove A2) */
 
 static bool    adc_ok = false;
-static float   light_pct = 0.0f, noise_pct = 0.0f, sound_loud_pct = SOUND_LOUD_PCT_DEF;
+static float   light_pct = 0.0f, noise_pct = 0.0f;
+static float   noise_base = 0.0f, sound_loud_pct = 50.0f;  /* trigger, set from baseline at boot */
+static bool    sound_armed = true;
 static bool    ir_detect = false;
 static uint8_t ir_same = 0;
 static GPIO_PinState ir_last_raw = GPIO_PIN_SET;
@@ -948,6 +1021,25 @@ static uint16_t adc_read(uint32_t ch)
     ADC1->CR  |= ADC_CR_ADSTART;
     if (!wait_flag(&ADC1->ISR, ADC_ISR_EOC, true)) return 0;
     return (uint16_t)(ADC1->DR & 0x0FFFU);
+}
+
+/* Ambient noise baseline: average of five 100 ms peak windows (buzzer silent). */
+static void sound_calibrate(void)
+{
+    if (!adc_ok) return;
+    float sum = 0.0f;
+    for (int w = 0; w < 5; w++) {
+        uint16_t mx = 0;
+        for (int i = 0; i < 50; i++) {
+            uint16_t v = adc_read(ADC_CH_SOUND);
+            if (v > mx) mx = v;
+            HAL_Delay(2);
+        }
+        sum += (float)mx * 100.0f / 4095.0f;
+    }
+    noise_base = sum / 5.0f;
+    sound_loud_pct = noise_base + SOUND_MARGIN_PCT;
+    if (sound_loud_pct > 95.0f) sound_loud_pct = 95.0f;
 }
 
 static float light_read_pct(void)
@@ -1083,8 +1175,10 @@ static void button_collect(uint8_t *singles, uint8_t *doubles)
  * ==========================================================================*/
 typedef enum {
     BB_SORTIE = 1, BB_CHARGE, BB_FIRE, BB_MOANS, BB_CLOSE, BB_OVERRUN,
-    BB_WEAPON, BB_FLIPPED, BB_RESCUED, BB_STANDBY, BB_DESTRUCT
+    BB_WEAPON, BB_FLIPPED, BB_RESCUED, BB_STANDBY, BB_DESTRUCT, BB_WAVE, BB_WAVE_CLEAR
 } bb_type_t;
+
+enum { BB_END_FLYING = 0, BB_END_RETURNED, BB_END_TIMEOUT };
 
 typedef struct {
     uint32_t t;            /* ms since sortie start */
@@ -1098,11 +1192,13 @@ typedef struct {
 
 typedef struct {
     uint32_t magic;
-    uint8_t  drone_id, count, head, rsv;
+    uint8_t  drone_id, count, head, end_reason;
     uint32_t sum;
-    uint32_t rsv2;
+    uint16_t shots, cells;          /* mission summary for this sortie */
+    uint16_t waves, flight_s;
+    uint32_t rsv;
     bb_rec_t rec[BB_SIZE];
-} bb_image_t;              /* 16 + 512 bytes */
+} bb_image_t;              /* 24 + 512 bytes, multiple of 8 for double-word programming */
 
 static bb_image_t bb;                  /* RAM copy of the current sortie */
 static uint32_t   bb_t0 = 0;
@@ -1111,7 +1207,9 @@ static bool       bb_flash_valid = false;
 static uint32_t bb_checksum(const bb_image_t *img)
 {
     const uint32_t *w = (const uint32_t *)(const void *)img->rec;
-    uint32_t s = 0x2028u ^ img->drone_id ^ ((uint32_t)img->count << 8) ^ ((uint32_t)img->head << 16);
+    uint32_t s = 0x2028u ^ img->drone_id ^ ((uint32_t)img->count << 8) ^ ((uint32_t)img->head << 16) ^
+                 ((uint32_t)img->end_reason << 24) ^ img->shots ^ ((uint32_t)img->cells << 16) ^
+                 ((uint32_t)img->waves << 3) ^ ((uint32_t)img->flight_s << 11);
     for (unsigned i = 0; i < sizeof(img->rec) / 4U; i++) s = (s << 5 | s >> 27) ^ w[i];
     return s;
 }
@@ -1199,6 +1297,11 @@ static void bb_flash_check(void)
 static uint8_t  map_rows[8];             /* bit7 = column 0 (left) */
 static bool     map_live = false;        /* a map exists for the current sortie */
 static uint32_t t_spread = 0, close_until = 0;
+static int      wave_no = 0;
+static bool     wave_active = false;     /* false during the AREA CLEARED pause */
+static uint32_t wave_pause_t = 0, spread_ms = WAVE_SPREAD_START_MS;
+
+static void event_text(const char *t, uint8_t prio);   /* section 14 */
 static bool     overrun_reported = false;
 static int      aim_x = 3, aim_y = 3;
 static uint32_t fire_t0 = 0;
@@ -1218,14 +1321,32 @@ static int map_count(void)
     return n;
 }
 
-static void map_new(void)
+/* Wave n: 2 + n outbreaks in the far half of the map, spreading faster each wave. */
+static void wave_start(int n)
 {
+    wave_no = n;
+    int seeds = 2 + n;
+    if (seeds > WAVE_MAX_SEEDS) seeds = WAVE_MAX_SEEDS;
+    uint32_t dec = (uint32_t)(n - 1) * WAVE_SPREAD_STEP_MS;
+    spread_ms = (dec + WAVE_SPREAD_MIN_MS < WAVE_SPREAD_START_MS) ? WAVE_SPREAD_START_MS - dec : WAVE_SPREAD_MIN_MS;
     memset(map_rows, 0, sizeof(map_rows));
-    for (int i = 0; i < MAP_SEEDS; i++) cell_set((int)(rng() % 8U), (int)(rng() % 4U));
-    aim_x = 3; aim_y = 3;
+    for (int placed = 0, tries = 0; placed < seeds && tries < 200; tries++) {
+        int x = (int)(rng() % 8U), y = (int)(rng() % 5U);
+        if (!cell(x, y)) { cell_set(x, y); placed++; }
+    }
     overrun_reported = false;
     map_live = true;
+    wave_active = true;
     t_spread = HAL_GetTick();
+    uart_printf("[EVT] Wave %d incoming: %d outbreaks, spreading every %lu.%lu s\r\n",
+                n, seeds, (unsigned long)(spread_ms / 1000U), (unsigned long)((spread_ms % 1000U) / 100U));
+    bb_log(BB_WAVE, n, seeds, 0, 0);
+}
+
+static void map_new(void)
+{
+    aim_x = 3; aim_y = 3;
+    wave_start(1);
 }
 
 static void map_spread(void)
@@ -1283,9 +1404,14 @@ static void aim_nearest(void)
  * 14. DISPLAY CONTENT (OLED + LED MATRIX)
  * ==========================================================================*/
 static uint32_t warn_mask = 0;
-static uint8_t  oled_page = 0;                   /* STANDBY page 0..2 */
+#define OLED_PAGES 4
+static uint8_t  oled_page = 0;                   /* STANDBY page 0..3 */
 static char     ev_text[24] = "";
 static uint32_t ev_until = 0;
+static uint8_t  ev_prio = 0;
+#define EV_NORMAL 1
+#define EV_EFFECT 2
+#define EV_CLOSE  3
 static const uint8_t *icon = NULL;
 static uint32_t icon_until = 0;
 static bool     habitat_found = false;
@@ -1293,15 +1419,20 @@ static int      habitat_secs = 0;
 static bool     smile = false;
 static uint32_t smile_t0 = 0, report_until = 0;
 static bool     boot_id_shown = false;
-
-static void event_text(const char *t)
-{
-    strncpy(ev_text, t, sizeof(ev_text) - 1);
-    ev_text[sizeof(ev_text) - 1] = '\0';
-    ev_until = HAL_GetTick() + EVENT_TEXT_MS;
-}
+static int      bb_view = 0;                     /* black box page: record shown */
 
 static bool event_active(void) { return ev_text[0] && (int32_t)(ev_until - HAL_GetTick()) > 0; }
+
+/* Situational priority: a message is never replaced by a less important one
+ * while it is still on screen (close contact > effects > normal notices). */
+static void event_text(const char *t, uint8_t prio)
+{
+    if (event_active() && prio < ev_prio) return;
+    strncpy(ev_text, t, sizeof(ev_text) - 1);
+    ev_text[sizeof(ev_text) - 1] = '\0';
+    ev_prio = prio;
+    ev_until = HAL_GetTick() + EVENT_TEXT_MS;
+}
 
 static void show_icon(const uint8_t *g, uint32_t ms)
 {
@@ -1319,6 +1450,11 @@ static const char *mode_name(sys_state_t s)
     }
 }
 
+static const char *end_name(uint8_t e)
+{
+    return e == BB_END_RETURNED ? "RETURNED" : (e == BB_END_TIMEOUT ? "RESCUE TIMEOUT" : "IN FLIGHT");
+}
+
 static int rescue_secs_left(void)
 {
     uint32_t t = HAL_GetTick() - t_attack_start;
@@ -1326,8 +1462,54 @@ static int rescue_secs_left(void)
     return (int)((RESCUE_WINDOW_MS - t + 999U) / 1000U);
 }
 
+/* Black box shown on OLED: the self-destructed drone's record if any,
+ * otherwise the last sortie still in RAM. */
+static const bb_image_t *bb_shown(void)
+{
+    return bb_flash_valid ? bb_flash_image() : &bb;
+}
+
+static const bb_rec_t *bb_rec_at(const bb_image_t *img, int i)
+{
+    uint8_t start = (uint8_t)((img->head + BB_SIZE - img->count) % BB_SIZE);
+    return &img->rec[(start + (unsigned)i) % BB_SIZE];
+}
+
+static void bb_short(const bb_rec_t *r, char *buf, size_t n)
+{
+    switch (r->type) {
+        case BB_SORTIE:     snprintf(buf, n, "SORTIE START"); break;
+        case BB_CHARGE:     snprintf(buf, n, "CHARGE %d->%d", r->a, r->b); break;
+        case BB_FIRE:       snprintf(buf, n, "FIRE P%d (%d,%d) x%ld", r->a, r->b, r->c, (long)r->d); break;
+        case BB_MOANS:      snprintf(buf, n, "MOANS (%d,%d)", r->b, r->c); break;
+        case BB_CLOSE:      snprintf(buf, n, "ZOMBIE CLOSE"); break;
+        case BB_OVERRUN:    snprintf(buf, n, "OVERRUN %d/64", r->a); break;
+        case BB_WEAPON:     snprintf(buf, n, "WEAPON %s %d", r->a ? "SEL" : "STD", r->b); break;
+        case BB_FLIPPED:    snprintf(buf, n, "FLIPPED"); break;
+        case BB_RESCUED:    snprintf(buf, n, "RESCUED %ds LEFT", r->a); break;
+        case BB_STANDBY:    snprintf(buf, n, "BACK TO STANDBY"); break;
+        case BB_DESTRUCT:   snprintf(buf, n, "SELF-DESTRUCT"); break;
+        case BB_WAVE:       snprintf(buf, n, "WAVE %d: %d SEEDS", r->a, r->b); break;
+        case BB_WAVE_CLEAR: snprintf(buf, n, "WAVE %d CLEARED", r->a); break;
+        default:            snprintf(buf, n, "?"); break;
+    }
+}
+
+static void hud_boot_check(void)
+{
+    oled_line(0, "== SYSTEM CHECK ==");
+    oled_linef(1, "SENSORS      %s", sensors_ok ? "OK" : "FAIL");
+    oled_linef(2, "LED MATRIX   %s", mx_ok ? "OK" : "NOT FOUND");
+    oled_linef(3, "5-WAY        %s", fiveway_addr ? "OK" : "NOT FOUND");
+    oled_linef(4, "DIP          %s", dip_addr ? "OK" : "NOT FOUND");
+    oled_linef(5, "MIC/LIGHT    %s", adc_ok ? "OK" : "FAIL");
+    oled_linef(6, "BLACK BOX    %s", bb_flash_valid ? "FOUND" : "EMPTY");
+    oled_linef(7, "DRONE #%d  STARTING", cfg.drone_id);
+}
+
 static void hud_standby(void)
 {
+    if (!elapsed(boot_tick, BOOT_CHECK_MS)) { hud_boot_check(); return; }
     if (calib_active) {
         oled_linef(0, "DRONE#%d  CALIBRATE", cfg.drone_id);
         oled_line(1, "");
@@ -1341,7 +1523,7 @@ static void hud_standby(void)
         return;
     }
     float alt = altitude_m();
-    oled_linef(0, "DRONE#%d STANDBY  %d/3", cfg.drone_id, oled_page + 1);
+    oled_linef(0, "DRONE#%d STANDBY  %d/%d", cfg.drone_id, oled_page + 1, OLED_PAGES);
     if (oled_page == 0) {
         if (sens_valid) {
             oled_linef(1, "T %4.1fC  H %4.1f%%", sens.v[S_T], sens.v[S_H]);
@@ -1351,8 +1533,8 @@ static void hud_standby(void)
             oled_linef(5, "G %6.2f dps", sens.v[S_G]);
             oled_linef(6, "M %5.1f uT", sens.v[S_M]);
         }
-        if ((int32_t)(report_until - HAL_GetTick()) > 0) oled_line(7, "REPORT SENT");
-        else if (event_active()) oled_line(7, ev_text);
+        /* priority: obstacle > sensor warning > other notices > normal */
+        if (event_active() && ev_prio >= EV_CLOSE) oled_line(7, ev_text);
         else if (warn_mask) {
             char buf[40] = "WARN:";
             for (int i = 0; i < S_COUNT; i++) {
@@ -1360,63 +1542,87 @@ static void hud_standby(void)
                 if (warn_mask & (1UL << (2 * i + 1))) { strcat(buf, " "); strcat(buf, th[i].tag); strcat(buf, "HI"); }
             }
             oled_line(7, buf);
-        } else oled_line(7, "STATUS: ALL NORMAL");
+        }
+        else if ((int32_t)(report_until - HAL_GetTick()) > 0) oled_line(7, "REPORT SENT");
+        else if (event_active()) oled_line(7, ev_text);
+        else oled_line(7, "STATUS: ALL NORMAL");
     } else if (oled_page == 1) {
         oled_linef(1, "HDG %03d %s", heading_deg, cardinal(heading_deg));
         oled_linef(2, "LAB BEARING %03d %s", lab_bearing, cardinal(lab_bearing));
         oled_linef(3, "TURN %+4d deg", turn_to_lab());
         oled_linef(4, "ALT %+6.1f m", alt);
         oled_linef(5, "LIGHT %3d%%", (int)light_pct);
-        oled_linef(6, "NOISE %3d%%", (int)noise_pct);
+        oled_linef(6, "NOISE %3d%% (BASE %d)", (int)noise_pct, (int)noise_base);
         oled_line(7, habitat_found ? "HABITAT: FOUND" : "HABITAT: SEARCHING");
-    } else {
-        uint32_t s = (HAL_GetTick() - boot_tick) / 1000U;
+    } else if (oled_page == 2) {
+        uint32_t sec = (HAL_GetTick() - boot_tick) / 1000U;
         oled_linef(1, "HABITAT FOUND: %lux", (unsigned long)habitat_count);
         oled_linef(2, "MOANS HEARD:   %lux", (unsigned long)moans_count);
         oled_linef(3, "ZOMBIES DOWN: %lu", (unsigned long)zombies_down);
         oled_linef(4, "SHOTS FIRED:  %lu", (unsigned long)shots_fired);
-        oled_linef(5, "FLIGHT %02lu:%02lu", (unsigned long)(s / 60U), (unsigned long)(s % 60U));
+        oled_linef(5, "FLIGHT %02lu:%02lu", (unsigned long)(sec / 60U), (unsigned long)(sec % 60U));
         oled_line(6, "");
         oled_line(7, "1x REPORT 2x BATTLE");
+    } else {
+        const bb_image_t *img = bb_shown();
+        oled_line(1, bb_flash_valid ? "BLACK BOX: LOST DRONE" : (img->count ? "BLACK BOX: LAST RUN" : "BLACK BOX: EMPTY"));
+        if (img->count == 0) {
+            for (uint8_t l = 2; l < 7; l++) oled_line(l, "");
+            oled_line(3, "  NO SORTIE YET");
+            oled_line(7, "^v PAGES");
+            return;
+        }
+        if (bb_view >= img->count) bb_view = img->count - 1;
+        if (bb_view < 0) bb_view = 0;
+        const bb_rec_t *rc = bb_rec_at(img, bb_view);
+        char ev[48];
+        bb_short(rc, ev, sizeof(ev));
+        oled_linef(2, "WAVES %u  SHOTS %u", img->waves, img->shots);
+        oled_linef(3, "CELLS CLEARED %u", img->cells);
+        oled_linef(4, "END: %s", end_name(img->end_reason));
+        oled_linef(5, "EVT %02d/%02d t=%lu.%lus", bb_view + 1, img->count,
+                   (unsigned long)(rc->t / 1000U), (unsigned long)((rc->t % 1000U) / 100U));
+        oled_line(6, ev);
+        oled_line(7, "<> EVENTS  ^v PAGES");
     }
 }
 
 static void hud_battle(void)
 {
-    char bar[11];
     int p = weapon_power();
-    for (int i = 0; i < 10; i++) bar[i] = (i < laser_energy) ? '#' : '-';
-    bar[10] = '\0';
     int n = map_count();
-    oled_linef(0, "DRONE#%d  HDG %03d %s", cfg.drone_id, heading_deg, cardinal(heading_deg));
-    oled_linef(1, "LASER [%s]%2d", bar, laser_energy);
+    if (wave_active) oled_linef(0, "WAVE %d   TARGETS %2d", wave_no, n);
+    else             oled_linef(0, "WAVE %d   CLEARED!", wave_no);
+    oled_bar(1, laser_energy, 10);
     if (cooldown_active) {
         int32_t sleft = (int32_t)(cooldown_until - HAL_GetTick());
         uint32_t left = sleft > 0 ? (uint32_t)sleft : 0U;
-        oled_linef(2, "COOLDOWN %lu.%lus", (unsigned long)(left / 1000U), (unsigned long)((left % 1000U) / 100U));
+        oled_linef(3, "ENERGY %2d/10 COOL%lu.%lu", laser_energy, (unsigned long)(left / 1000U), (unsigned long)((left % 1000U) / 100U));
     } else {
-        oled_linef(2, "POWER %d/10 %-4s %s", p, power_name(p), weapon_select_mode() ? "SEL" : "STD");
+        oled_linef(3, "ENERGY %2d/10 P%d %s", laser_energy, p, power_name(p));
     }
-    oled_linef(3, "AIM (%d,%d)   %s", aim_x, aim_y, cell(aim_x, aim_y) ? "TARGET!" : "");
-    oled_linef(4, "INFECTED %2d/64 %3d%%", n, n * 100 / 64);
-    oled_linef(5, "ZOMBIES DOWN: %lu", (unsigned long)zombies_down);
-    if (event_active()) oled_line(6, ev_text);
-    else if (n >= MAP_OVERRUN_CELLS) oled_line(6, "OVERRUN!");
+    oled_linef(4, "AIM (%d,%d)    %s", aim_x, aim_y, cell(aim_x, aim_y) ? "TARGET!" : "");
+    oled_linef(5, "DOWN %-4u WAVES CLR %u", bb.cells, bb.waves);
+    /* priority: zombie close > effects (hit/miss/cleared) > overrun > normal */
+    if (event_active() && ev_prio >= EV_CLOSE) oled_line(6, ev_text);
     else if (ir_detect) oled_line(6, "RADAR: ZOMBIE CLOSE!");
+    else if (event_active()) oled_line(6, ev_text);
+    else if (n >= MAP_OVERRUN_CELLS) oled_line(6, "OVERRUN!");
     else oled_line(6, "RADAR: CLEAR");
     oled_line(7, "1x CHARGE 2x STANDBY");
 }
 
 static void hud_attacked(void)
 {
+    char big[16];
+    snprintf(big, sizeof(big), "%2d s", rescue_secs_left());
     oled_line(0, "!! UNDER ATTACK !!");
-    oled_line(1, "");
-    oled_linef(2, "     DRONE #%d", cfg.drone_id);
-    oled_linef(3, "  RESCUE IN %2d s", rescue_secs_left());
+    oled_linef(1, "DRONE #%d  RESCUE IN", cfg.drone_id);
+    oled_big(2, 40, big);
     oled_line(4, "");
-    oled_line(5, "DOUBLE-PRESS TO");
+    oled_line(5, "  DOUBLE-PRESS TO");
     oled_line(6, "      RESCUE");
-    oled_line(7, "");
+    oled_line(7, "SOS BEACON ON");
 }
 
 static void hud_terminated(void)
@@ -1426,7 +1632,7 @@ static void hud_terminated(void)
     oled_line(2, "");
     oled_line(3, training ? "   TRAINING MODE" : "  COMMS OFFLINE");
     oled_line(4, "  BLACK BOX SAVED");
-    oled_line(5, "");
+    oled_linef(5, "  END: %s", end_name(bb.end_reason));
     oled_line(6, training ? "   RESTARTING..." : "   press RESET");
     oled_line(7, "");
 }
@@ -1441,6 +1647,7 @@ static void matrix_render(void)
         if (elapsed(boot_tick, BOOT_ID_MS)) boot_id_shown = true;
         else { mx_show(GL_DIGIT[cfg.drone_id & 7U]); return; }
     }
+    /* ATTACKED has the highest priority: any animation yields immediately. */
     if (state == ST_ATTACKED) {
         mx_show(bz_playing(SND_SOS) && (bz_idx / 6U) == 1U ? GL_O : GL_S);
         return;
@@ -1453,10 +1660,7 @@ static void matrix_render(void)
     if (state == ST_STANDBY) {
         if (icon && (int32_t)(icon_until - now) > 0) { mx_show(icon); return; }
         icon = NULL;
-        if (calib_active) {                                  /* spinner */
-            mx_show(GL_ARROW[(now / 150U) % 8U]);
-            return;
-        }
+        if (calib_active) { mx_show(GL_ARROW[(now / 150U) % 8U]); return; }
         int rel = turn_to_lab();
         if (rel < 0) rel += 360;
         mx_show(GL_ARROW[((rel + 22) % 360) / 45]);
@@ -1465,14 +1669,12 @@ static void matrix_render(void)
 
     /* BATTLE: infection map + crosshair + fire animation */
     memcpy(rows, map_rows, 8);
-    if ((int32_t)(close_until - now) > 0 && ((now / 250U) & 1U)) {
-        rows[7] &= (uint8_t)~0x18U;                            /* close zone blinks */
-    }
+    if ((int32_t)(close_until - now) > 0 && ((now / 250U) & 1U)) rows[7] &= (uint8_t)~0x18U;
     if (fire_anim) {
         uint32_t t = now - fire_t0;
         uint32_t beam_ms = 4U * BEAM_FRAME_MS;
         if (t < beam_ms) {
-            int frame = (int)(t / BEAM_FRAME_MS) + 1;            /* 1..4 */
+            int frame = (int)(t / BEAM_FRAME_MS) + 1;
             for (int k = 1; k <= frame; k++) {
                 float f = (float)k / 4.0f;
                 int x = (int)(3.5f + ((float)fire_x - 3.5f) * f + 0.5f);
@@ -1489,6 +1691,7 @@ static void matrix_render(void)
         }
         fire_anim = false;
     }
+    if (!wave_active) { mx_show(GL_CHECK); return; }      /* AREA CLEARED pause */
     if ((now / CROSSHAIR_BLINK_MS) & 1U) rows[aim_y] ^= (uint8_t)(0x80U >> aim_x);
     mx_show(rows);
 }
@@ -1505,13 +1708,13 @@ static void led_set(bool on)
 static void send_stat(void)
 {
     int p = weapon_power();
-    uart_printf("[STAT] DRONE: #%d, MODE: %s, LASER: %d/10, WEAPON: %s %d/10, SHOTS: %lu, ZOMBIES DOWN: %lu, ALT: %+.1f m, HDG: %03d %s\r\n",
-                cfg.drone_id, mode_name(state), laser_energy,
+    uart_printf("[STAT] DRONE: #%d, MODE: %s, WAVE: %d, LASER: %d/10, WEAPON: %s %d/10, SHOTS: %lu, ZOMBIES DOWN: %lu, ALT: %+.1f m, HDG: %03d %s\r\n",
+                cfg.drone_id, mode_name(state), map_live ? wave_no : 0, laser_energy,
                 weapon_select_mode() ? "SELECT" : "RULE", p,
                 (unsigned long)shots_fired, (unsigned long)zombies_down,
                 altitude_m(), heading_deg, cardinal(heading_deg));
-    uart_printf("[STAT] IR: %s, LIGHT: %.0f %%, NOISE: %.0f %%, HABITAT: %s, SILENT: %s, MOUNT: %s, DIP: %s, 5-WAY: %s\r\n",
-                ir_detect ? "DETECT" : "CLEAR", light_pct, noise_pct,
+    uart_printf("[STAT] IR: %s, LIGHT: %.0f %%, NOISE: %.0f %% (base %.0f, trigger %.0f), HABITAT: %s, SILENT: %s, MOUNT: %s, DIP: %s, 5-WAY: %s\r\n",
+                ir_detect ? "DETECT" : "CLEAR", light_pct, noise_pct, noise_base, sound_loud_pct,
                 habitat_found ? "FOUND" : "SEARCHING", (cfg.silent || muted) ? "ON" : "OFF",
                 cfg.mount_down ? "Z+ down" : "chip-up",
                 dip_addr ? "OK" : "missing", fiveway_addr ? "OK" : "missing");
@@ -1519,7 +1722,11 @@ static void send_stat(void)
 
 static void enter_standby(void)
 {
-    if (state == ST_BATTLE) bb_log(BB_STANDBY, 0, 0, 0, 0);
+    if (state == ST_BATTLE) {
+        bb_log(BB_STANDBY, 0, 0, 0, 0);
+        bb.end_reason = BB_END_RETURNED;
+        bb.flight_s = (uint16_t)((HAL_GetTick() - bb_t0) / 1000U);
+    }
     state = ST_STANDBY;
     uart_write("Entering STANDBY MODE\r\n");
     led_set(true);
@@ -1528,6 +1735,7 @@ static void enter_standby(void)
     cooldown_active = false;
     fire_anim = false;
     oled_page = 0;
+    bb_view = 0;
     t_sensor = HAL_GetTick() - SENSOR_PERIOD_MS;
     hud_standby();
 }
@@ -1549,6 +1757,7 @@ static void enter_battle(bool from_rescue)
     t_led = HAL_GetTick();
     t_flip_poll = HAL_GetTick();
     t_spread = HAL_GetTick();
+    if (!wave_active) wave_pause_t = HAL_GetTick();
     hud_battle();
     send_stat();
 }
@@ -1582,6 +1791,8 @@ static void rescue(void)
 static void terminate(void)
 {
     bb_log(BB_DESTRUCT, 0, 0, 0, 0);
+    bb.end_reason = BB_END_TIMEOUT;
+    bb.flight_s = (uint16_t)((HAL_GetTick() - bb_t0) / 1000U);
     state = ST_TERMINATED;
     bool saved = bb_flash_save();
     bz_stop();
@@ -1643,6 +1854,8 @@ static void laser_fire(void)
         if ((blast_rows[y] & (0x80U >> x)) && cell(x, y)) { cell_clr(x, y); cleared++; }
     }
     zombies_down += (uint32_t)cleared;
+    bb.shots++;
+    bb.cells = (uint16_t)(bb.cells + cleared);
     fire_anim = true; fire_t0 = HAL_GetTick(); fire_x = aim_x; fire_y = aim_y;
     bz_fx(p <= 1 ? SND_PIU : (p <= 3 ? SND_PEW : SND_BOOM),
           p <= 1 ? (uint8_t)(sizeof(SND_PIU) / sizeof(note_t)) :
@@ -1652,11 +1865,13 @@ static void laser_fire(void)
         uart_printf("[EVT] LASER FIRED (%d/10, %s) at (%d,%d): %d cell%s cleared. Energy %d/10 -> %d/10. Zombies down: %lu\r\n",
                     p, power_name(p), aim_x, aim_y, cleared, cleared > 1 ? "s" : "", before, laser_energy,
                     (unsigned long)zombies_down);
-        event_text(cleared >= 3 ? "BOOM! AREA CLEARED" : "ZOMBIE DOWN!");
+        char t[24];
+        snprintf(t, sizeof(t), "HIT! %d CELL%s CLEARED", cleared, cleared > 1 ? "S" : "");
+        event_text(t, EV_EFFECT);
     } else {
         uart_printf("[EVT] LASER FIRED (%d/10, %s) at (%d,%d): missed, no zombies there. Energy %d/10 -> %d/10\r\n",
                     p, power_name(p), aim_x, aim_y, before, laser_energy);
-        event_text("MISSED!");
+        event_text("MISSED!", EV_EFFECT);
     }
     bb_log(BB_FIRE, p, aim_x, aim_y, cleared);
 
@@ -1728,16 +1943,16 @@ static void on_ir(bool detected)
     if (t_ir_evt != 0 && !elapsed(t_ir_evt, AUX_EVENT_COOLDOWN_MS)) return;
     t_ir_evt = HAL_GetTick();
     if (state == ST_BATTLE) {
-        cell_set(3, 7); cell_set(4, 7);
+        if (wave_active) { cell_set(3, 7); cell_set(4, 7); }
         close_until = HAL_GetTick() + CLOSE_BLINK_MS;
         uart_write("[EVT] ZOMBIE AT CLOSE RANGE!\r\n");
-        event_text("RADAR: ZOMBIE CLOSE!");
+        event_text("RADAR: ZOMBIE CLOSE!", EV_CLOSE);
         bb_log(BB_CLOSE, 0, 0, 0, 0);
         bz_fx(SND(SND_ALARM));
         hud_battle();
     } else {
         uart_write("[EVT] Obstacle at close range, holding position\r\n");
-        event_text("OBSTACLE AHEAD");
+        event_text("OBSTACLE AHEAD", EV_CLOSE);
         show_icon(GL_EXCLAIM, ICON_MS);
         bz_fx(SND(SND_WARN));
         hud_standby();
@@ -1746,24 +1961,33 @@ static void on_ir(bool detected)
 
 static void on_sound_window(float pct)
 {
-    if (pct < sound_loud_pct || (state != ST_STANDBY && state != ST_BATTLE)) return;
+    /* The microphone must not hear our own buzzer: ignore it while a tone is
+     * playing and for SOUND_GUARD_MS after, then require the level to drop
+     * below the recovery level before another roar can be reported. */
+    if (bz_cur_freq != 0 || !elapsed(bz_tone_off_t, SOUND_GUARD_MS)) return;
+    float recover = noise_base + SOUND_RECOVER_PCT;
+    if (recover > sound_loud_pct - 5.0f) recover = sound_loud_pct - 5.0f;
+    if (pct < recover) { sound_armed = true; return; }
+    if (pct < sound_loud_pct || !sound_armed) return;
+    if (state != ST_STANDBY && state != ST_BATTLE) return;
     if (t_sound_evt != 0 && !elapsed(t_sound_evt, AUX_EVENT_COOLDOWN_MS)) return;
+    sound_armed = false;
     t_sound_evt = HAL_GetTick();
     if (state == ST_BATTLE) {
-        /* new outbreak on a random edge cell */
-        int x, y, side = (int)(rng() % 3U);
+        if (!wave_active) return;                    /* AREA CLEARED pause */
+        int x, y, side = (int)(rng() % 3U);          /* new outbreak on an edge cell */
         if (side == 0)      { x = (int)(rng() % 8U); y = 0; }
         else if (side == 1) { x = 0; y = (int)(rng() % 6U); }
         else                { x = 7; y = (int)(rng() % 6U); }
         cell_set(x, y);
         uart_printf("[EVT] Zombie moans: new outbreak at (%d,%d)\r\n", x, y);
-        event_text("MOANS: NEW OUTBREAK");
+        event_text("MOANS: NEW OUTBREAK", EV_NORMAL);
         bb_log(BB_MOANS, (int)pct, x, y, 0);
         hud_battle();
     } else {
         moans_count++;
         uart_printf("[EVT] Zombie moans detected (noise %.0f %%). Recommend BATTLE MODE\r\n", pct);
-        event_text("ZOMBIES HEARD!");
+        event_text("ZOMBIES HEARD!", EV_NORMAL);
         show_icon(GL_ZOMBIE, ICON_MS);
         bz_fx(SND(SND_WARN));
         hud_standby();
@@ -1816,7 +2040,7 @@ static void dip_apply(uint8_t bits)
             if (changed) {
                 uart_printf("[EVT] Config: drone #%d, mount %s, silent %s\r\n", cfg.drone_id,
                             cfg.mount_down ? "Z+ down" : "chip-up", cfg.silent ? "ON" : "OFF");
-                event_text("CONFIG UPDATED");
+                event_text("CONFIG UPDATED", EV_NORMAL);
                 hud_standby();
             }
         }
@@ -1840,8 +2064,14 @@ static void dip_apply(uint8_t bits)
 static void fiveway_press(int idx)
 {
     if (state == ST_STANDBY && !calib_active) {
-        if (idx == FIVEWAY_IDX_UP)   { oled_page = (uint8_t)((oled_page + 2U) % 3U); hud_standby(); }
-        if (idx == FIVEWAY_IDX_DOWN) { oled_page = (uint8_t)((oled_page + 1U) % 3U); hud_standby(); }
+        if (idx == FIVEWAY_IDX_UP)   oled_page = (uint8_t)((oled_page + OLED_PAGES - 1U) % OLED_PAGES);
+        if (idx == FIVEWAY_IDX_DOWN) oled_page = (uint8_t)((oled_page + 1U) % OLED_PAGES);
+        if (oled_page == 3U) {                       /* black box: browse events */
+            int n = bb_shown()->count;
+            if (idx == FIVEWAY_IDX_LEFT  && bb_view > 0)     bb_view--;
+            if (idx == FIVEWAY_IDX_RIGHT && bb_view < n - 1) bb_view++;
+        }
+        hud_standby();
     } else if (state == ST_BATTLE) {
         if (idx == FIVEWAY_IDX_UP    && aim_y > 0) aim_y--;
         if (idx == FIVEWAY_IDX_DOWN  && aim_y < 7) aim_y++;
@@ -1850,7 +2080,7 @@ static void fiveway_press(int idx)
         if (idx == FIVEWAY_IDX_CENTER) {
             aim_nearest();
             uart_printf("[EVT] Target locked at (%d,%d)\r\n", aim_x, aim_y);
-            event_text("TARGET LOCKED");
+            event_text("TARGET LOCKED", EV_NORMAL);
         }
         hud_battle();
     }
@@ -1898,7 +2128,7 @@ static void habitat_check(void)
             habitat_count++;
             uart_printf("[EVT] Possible human habitat found: T %.1f C, H %.0f %%RH, light %.0f %%\r\n",
                         sens.v[S_T], sens.v[S_H], light_pct);
-            event_text("HABITAT: FOUND");
+            event_text("HABITAT: FOUND", EV_NORMAL);
             show_icon(GL_HOUSE, HOUSE_ICON_MS);
             bz_fx(SND(SND_HABITAT));
         }
@@ -1921,7 +2151,7 @@ static void standby_tick(void)
             mag_off_y = (cal_max_y + cal_min_y) / 2.0f;
             uart_printf("[EVT] Compass calibrated: offset X %.0f mG, Y %.0f mG. Type HOME to re-register the lab bearing\r\n",
                         mag_off_x, mag_off_y);
-            event_text("COMPASS CALIBRATED");
+            event_text("COMPASS CALIBRATED", EV_NORMAL);
         }
         static uint32_t t_cal_hud = 0;
         if (elapsed(t_cal_hud, 500)) { t_cal_hud = HAL_GetTick(); hud_standby(); }
@@ -1971,8 +2201,20 @@ static void battle_tick(void)
         led_set(!led_on);
     }
 
-    /* Infection spreads */
-    if (map_live && elapsed(t_spread, SPREAD_MS)) {
+    /* Waves: cleared map -> AREA CLEARED, short pause, next (bigger, faster) wave */
+    if (map_live && wave_active && map_count() == 0) {
+        wave_active = false;
+        wave_pause_t = HAL_GetTick();
+        bb.waves++;
+        bb_log(BB_WAVE_CLEAR, wave_no, bb.cells, 0, 0);
+        uart_printf("[EVT] Wave %d cleared! AREA CLEARED (%u cells cleared this sortie)\r\n", wave_no, bb.cells);
+        event_text("AREA CLEARED!", EV_EFFECT);
+        bz_fx(SND(SND_VICTORY));
+        hud_battle();
+    } else if (map_live && !wave_active && elapsed(wave_pause_t, WAVE_PAUSE_MS)) {
+        wave_start(wave_no + 1);
+        hud_battle();
+    } else if (map_live && wave_active && elapsed(t_spread, spread_ms)) {
         t_spread = HAL_GetTick();
         map_spread();
         int n = map_count();
@@ -1999,10 +2241,6 @@ static void battle_tick(void)
             if (elapsed(t_cd, 100)) { t_cd = HAL_GetTick(); hud_battle(); }
         }
     }
-
-    /* Heading on the cockpit */
-    static uint32_t t_hdg = 0;
-    if (elapsed(t_hdg, 500)) { t_hdg = HAL_GetTick(); compass_update(false); hud_battle(); }
 
     /* Flip detection: IMU interrupt for instant response, polling as a safety net. */
     if (flip_irq || elapsed(t_flip_poll, FLIP_POLL_MS)) {
@@ -2068,7 +2306,7 @@ static void cmd_thresh(void)
         if (th[i].use_high) snprintf(hi, sizeof(hi), "%.2f", th[i].high);
         uart_printf("[CMD] %s: low %s, high %s %s\r\n", th[i].tag, lo, hi, th[i].unit);
     }
-    uart_printf("[CMD] NOISE (moans): %.0f %%\r\n", sound_loud_pct);
+    uart_printf("[CMD] NOISE (moans): trigger %.0f %%, ambient baseline %.0f %%\r\n", sound_loud_pct, noise_base);
 }
 
 static void cmd_not_allowed(void)
@@ -2090,6 +2328,8 @@ static const char *bb_type_name(uint8_t t)
         case BB_RESCUED:  return "RESCUED";
         case BB_STANDBY:  return "BACK TO STANDBY";
         case BB_DESTRUCT: return "SELF-DESTRUCT (no rescue)";
+        case BB_WAVE:     return "WAVE START";
+        case BB_WAVE_CLEAR: return "WAVE CLEARED";
         default:          return "?";
     }
 }
@@ -2098,6 +2338,8 @@ static void bb_print(const bb_image_t *img, const char *source)
 {
     if (img->count == 0) { uart_write("[BBOX] empty\r\n"); return; }
     uart_printf("[BBOX] %s, drone #%d, %d records\r\n", source, img->drone_id, img->count);
+    uart_printf("[BBOX] LAST MISSION: waves cleared %u, shots fired %u, cells cleared %u, flight %u s, END: %s\r\n",
+                img->waves, img->shots, img->cells, img->flight_s, end_name(img->end_reason));
     uint8_t start = (uint8_t)((img->head + BB_SIZE - img->count) % BB_SIZE);
     for (uint8_t i = 0; i < img->count; i++) {
         const bb_rec_t *r = &img->rec[(start + i) % BB_SIZE];
@@ -2111,6 +2353,8 @@ static void bb_print(const bb_image_t *img, const char *source)
             case BB_FLIPPED: snprintf(extra, sizeof(extra), " Az=%ld.%02ld m/s^2", (long)(r->d / 100), (long)labs(r->d % 100)); break;
             case BB_RESCUED: snprintf(extra, sizeof(extra), " with %d s left", r->a); break;
             case BB_SORTIE:  snprintf(extra, sizeof(extra), " energy %d/10, power %d/10", r->a, r->b); break;
+            case BB_WAVE:    snprintf(extra, sizeof(extra), " %d, %d outbreaks", r->a, r->b); break;
+            case BB_WAVE_CLEAR: snprintf(extra, sizeof(extra), " %d (%d cells so far)", r->a, r->b); break;
             default: break;
         }
         uart_printf("[BBOX] t=%3lu.%lus %-9s %s%s\r\n", (unsigned long)(r->t / 1000U), (unsigned long)((r->t % 1000U) / 100U),
@@ -2361,6 +2605,7 @@ static void app_init(void)
     ir_init();
     adc_init();
     multiswitch_probe();
+    sound_calibrate();                 /* before any buzzer sound */
     GPIO_IT_Init();
 
     /* Drone configuration from the DIP switch (defaults = assignment behaviour) */
@@ -2369,9 +2614,10 @@ static void app_init(void)
 
     uart_printf("\r\n=== Drone #%d online === mount: %s, silent: %s\r\n", cfg.drone_id,
                 cfg.mount_down ? "Z+ down" : "chip-up", cfg.silent ? "ON" : "OFF");
-    uart_printf("[EVT] OLED %s, LED matrix %s, ADC %s, DIP %s, 5-way %s. Type HELP for commands.\r\n",
-                oled_ok ? "ok" : "missing", mx_ok ? "ok" : "missing", adc_ok ? "ok" : "FAILED",
-                dip_addr ? "ok" : "missing", fiveway_addr ? "ok" : "missing");
+    uart_printf("[EVT] System check: sensors %s, OLED %s, LED matrix %s, mic/light %s, DIP %s, 5-way %s. Type HELP for commands.\r\n",
+                sensors_ok ? "OK" : "FAIL", oled_ok ? "OK" : "NOT FOUND", mx_ok ? "OK" : "NOT FOUND",
+                adc_ok ? "OK" : "FAIL", dip_addr ? "OK" : "NOT FOUND", fiveway_addr ? "OK" : "NOT FOUND");
+    uart_printf("[EVT] Mic ambient baseline %.0f %%, roar trigger %.0f %%\r\n", noise_base, sound_loud_pct);
 #if ENABLE_DEV_TOOLS
     i2c_scan();
 #endif

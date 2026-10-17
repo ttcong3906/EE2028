@@ -1,4 +1,4 @@
-# EE2028 A2 — The Last of EE2028: Spec v2
+# EE2028 A2 — The Last of EE2028: Spec v2.2
 
 Tài liệu này là "hợp đồng" giữa bạn và mình: code viết đúng theo đây, muốn đổi hành vi thì sửa file này trước.
 Toàn bộ code nằm trong **một file `Core/Src/main.c`**. Lịch sử quyết định ở mục 17.
@@ -97,6 +97,8 @@ Bốn cổng I2C trên shield nối chung một bus (PB8/PB9).
 | Pressure | Lưu `P0` (trung bình 10 lần đọc) làm mốc **độ cao 0 m** | | `[EVT] Altitude zero at 1008.52 hPa` |
 | Magnetometer | Lưu hướng hiện tại làm **hướng về phòng lab** | | `[EVT] Lab bearing registered: 237 deg` |
 | Hộp đen | Nếu flash còn hộp đen của lần bay trước | | `[EVT] Black box of Drone #3 recovered (18 records). Type BLACKBOX to read` |
+| OLED | **Trang kiểm tra hệ thống** trong 2.5 s đầu: SENSORS, LED MATRIX, 5-WAY, DIP, MIC/LIGHT là `OK` / `NOT FOUND` / `FAIL`, BLACK BOX là `FOUND` / `EMPTY` | | `[EVT] System check: sensors OK, OLED OK, LED matrix OK, mic/light OK, DIP OK, 5-way NOT FOUND` |
+| Micro | Đo mức ồn nền (mục 6b) | | `[EVT] Mic ambient baseline …` |
 | LED matrix | Hiện số hiệu drone 1 s | Chữ số | |
 | Buzzer | Tiếng khởi động ngắn | | |
 | | Vào STANDBY | | `Entering STANDBY MODE` *(đề)* |
@@ -111,12 +113,20 @@ Bốn cổng I2C trên shield nối chung một bus (PB8/PB9).
 | LED2 *(đề)* | Sáng liên tục | | |
 | Magnetometer + accel | **La bàn về phòng lab**: hướng có bù nghiêng | LED matrix: mũi tên chỉ về phòng lab, xoay theo khi xoay board. OLED: `HDG 237 SW` | |
 | Light + T + H | **Tìm nơi ở cho người**: 20–32 °C, 40–70 %RH, ánh sáng ≥ 30 %, thỏa liên tục 3 s | OLED: `HABITAT: FOUND`. LED matrix: hình ngôi nhà 2 s. Buzzer: hai nốt chuông | `[EVT] Possible human habitat found: T 26.1 C, H 58 %RH, light 62 %`; khi mất: `[EVT] Habitat conditions lost` |
-| Sound | **Nghe tiếng gầm** ("moans of the infected") | OLED: `ZOMBIES HEARD!` 2 s. LED matrix: mặt zombie 1 s. Buzzer bíp | `[EVT] Zombie moans detected (noise 63 %). Recommend BATTLE MODE` |
+| Sound | **Nghe tiếng gầm** ("moans of the infected"), có chống nghe nhầm buzzer (mục 6b) | OLED: `ZOMBIES HEARD!` 2 s. LED matrix: mặt zombie 1 s. Buzzer bíp | `[EVT] Zombie moans detected (noise 63 %). Recommend BATTLE MODE` |
 | IR | **Tránh va chạm** | OLED: `OBSTACLE AHEAD`. LED matrix: dấu `!`. Buzzer bíp | `[EVT] Obstacle at close range, holding position` |
 | 5-way | Lên/xuống: đổi trang OLED (mục 13) | | |
 | PB single | **Báo cáo trinh sát** gửi về Command Centre qua UART: tóm tắt chuyến trinh sát tới lúc đó | OLED: `REPORT SENT` 1 s | `[REPORT] Drone #3: alt +2.1 m, hdg 237, habitat found 2x, moans heard 3x, zombies down 12` |
 
 - Sự kiện sound và IR có thời gian chờ 3 s để không lặp.
+
+### 6b. Chống micro nghe nhầm tiếng buzzer
+
+Buzzer nằm cạnh micro, tiếng BOOM hay báo động có thể bị tính thành "tiếng zombie gầm" rồi sinh thêm ổ nhiễm. Vì vậy:
+1. **Bỏ qua micro** trong lúc buzzer đang kêu và **200 ms** sau khi nó tắt.
+2. **Đo mức ồn nền** lúc khởi động (trước mọi âm thanh của board): trung bình 5 cửa sổ 100 ms. In ra `[EVT] Mic ambient baseline 12 %, roar trigger 37 %`.
+3. **Ngưỡng kích hoạt** = nền + 25 % (lệnh `SET NOISE` đổi được).
+4. **Trễ phục hồi:** sau một lần báo, mức ồn phải xuống dưới nền + 10 % thì mới báo lần tiếp theo. Một tiếng ồn kéo dài chỉ tính một lần.
 - Lật board trong STANDBY: không có tác dụng.
 
 ---
@@ -125,14 +135,14 @@ Bốn cổng I2C trên shield nối chung một bus (PB8/PB9).
 
 | Module | Làm gì | Hiển thị | UART |
 |---|---|---|---|
-| Khi vào | Tạo bản đồ mới với 3 ổ nhiễm ngẫu nhiên | | `Entering BATTLE MODE` *(đề)* + `[STAT]` |
+| Khi vào | Bắt đầu **đợt 1** trên bản đồ mới (mục 8) | | `Entering BATTLE MODE` *(đề)* + `[STAT]` + `[EVT] Wave 1 incoming: 3 outbreaks` |
 | LED2 *(đề)* | Nháy 1 Hz | | |
 | LED matrix | **Bản đồ lây nhiễm** (mục 8) + tâm ngắm | | |
 | OLED | **Buồng lái** (mục 13) | | |
 | PB single *(đề)* | Nạp +3/10, đủ năng lượng thì tự bắn (mục 9) | | `[EVT] LASER charged: 3/10 -> 6/10` |
 | 5-way | 4 hướng: dời tâm ngắm 1 ô, giữ nghiêng thì chạy liên tục. Giữa: nhảy tới ô nhiễm gần nhất | Tâm ngắm nhấp nháy | |
-| Sound | Tiếng gầm → **ổ nhiễm mới** ở một ô mép bản đồ | OLED dòng 7: `MOANS: NEW OUTBREAK` | `[EVT] Zombie moans: new outbreak at (0,5)` |
-| IR | Vật áp sát → ô ngay trước drone (hàng 7, cột 3–4) bị nhiễm, nhấp nháy. Buzzer báo động | OLED dòng 7: `RADAR: ZOMBIE CLOSE!` | `[EVT] ZOMBIE AT CLOSE RANGE!` |
+| Sound | Tiếng gầm → **ổ nhiễm mới** ở một ô mép bản đồ (không tạo trong lúc nghỉ giữa hai đợt) | OLED dòng 7: `MOANS: NEW OUTBREAK` | `[EVT] Zombie moans: new outbreak at (0,5)` |
+| IR | Vật áp sát → ô ngay trước drone (hàng 7, cột 3–4) bị nhiễm, nhấp nháy. Buzzer báo động | OLED dòng 7: `RADAR: ZOMBIE CLOSE!` (ưu tiên cao nhất) | `[EVT] ZOMBIE AT CLOSE RANGE!` |
 | Accel *(đề)* | Phát hiện lật theo kiểu lắp ở SW4 (mục 10) | | → ATTACKED |
 | PB double *(đề)* | Về STANDBY, **bản đồ bị xóa** | | `Entering STANDBY MODE` |
 
@@ -140,15 +150,18 @@ BATTLE không gửi telemetry định kỳ, chỉ gửi sự kiện.
 
 ---
 
-## 8. Bản đồ lây nhiễm (LED matrix trong BATTLE)
+## 8. Bản đồ lây nhiễm và các đợt (LED matrix trong BATTLE)
 
-- 8x8 là khu vực phía trước drone nhìn từ trên xuống. Drone ở giữa cạnh dưới. Hàng 0 xa nhất, hàng 7 gần nhất.
-- Ô sáng = khu bị zombie chiếm. Bắt đầu với **3 ổ nhiễm** ngẫu nhiên ở hàng 0–3.
-- **Lây lan:** mỗi **3 s**, một ô nhiễm ngẫu nhiên lây sang một ô kề (trên, dưới, trái, phải) chưa nhiễm.
+- 8x8 là khu vực phía trước drone nhìn từ trên xuống. Drone ở giữa cạnh dưới. Hàng 0 xa nhất, hàng 7 gần nhất. Ô sáng = khu bị zombie chiếm.
+- **Chiến đấu theo đợt:**
+  - Đợt *n* rải **2 + n** ổ nhiễm (tối đa 12) ở nửa xa của bản đồ (hàng 0–4): đợt 1 có 3 ổ, đợt 5 có 7 ổ.
+  - Trong đợt, mỗi khoảng thời gian một ô nhiễm lây sang một ô kề chưa nhiễm. Khoảng này bắt đầu 3 s ở đợt 1, mỗi đợt nhanh hơn 0.25 s, nhanh nhất 1 s.
+  - **Dọn sạch bản đồ** → `[EVT] Wave 2 cleared! AREA CLEARED`, tiếng chiến thắng, LED matrix hiện dấu tích ✓, OLED `WAVE 2  CLEARED!`. **2 s** sau đợt kế tiếp bắt đầu.
+  - Thua một đợt không dẫn tới ATTACKED. Theo đề, drone chỉ bị hạ khi bị lật.
 - **Tâm ngắm:** nhấp nháy 4 Hz. Ô dưới tâm ngắm đang nhiễm thì OLED báo `TARGET!`.
-- **Quá 75 % (≥ 48/64 ô):** chỉ báo `[EVT] AREA OVERRUN (52/64)` và OLED `OVERRUN!`. Không có hậu quả khác, vì theo đề drone chỉ bị hạ khi bị lật. Báo lại khi xuống dưới 75 % rồi vượt lần nữa.
-- Rời BATTLE (về STANDBY) thì bản đồ bị xóa. Vào lại BATTLE thì tạo bản đồ mới.
-- Khi bị tấn công thì bản đồ dừng lây lan. Được cứu thì quay lại bản đồ cũ.
+- **Quá 75 % (≥ 48/64 ô):** chỉ báo `[EVT] AREA OVERRUN (52/64)` và OLED `OVERRUN!`. Báo lại khi xuống dưới 75 % rồi vượt lần nữa.
+- Rời BATTLE (về STANDBY) thì bản đồ bị xóa. Vào lại BATTLE thì bắt đầu lại từ đợt 1.
+- Khi bị tấn công thì bản đồ dừng lây lan. Được cứu thì tiếp tục đúng đợt đó.
 
 ---
 
@@ -217,41 +230,46 @@ BATTLE không gửi telemetry định kỳ, chỉ gửi sự kiện.
 
 ---
 
-## 13. OLED 128x64 (21 ký tự × 8 dòng)
+## 13. OLED 128x64 (21 ký tự × 8 dòng, có font chữ lớn 2x)
 
-**STANDBY:** 5-way lên/xuống đổi trang.
+**Ưu tiên hiển thị theo tình huống:** ATTACKED → vật / zombie áp sát → cảnh báo cảm biến → hiệu ứng bắn (trúng, trượt, AREA CLEARED) → thông báo thường. Một thông báo đang hiện không bị thông báo kém quan trọng hơn ghi đè. Khi bị lật, mọi hiệu ứng bắn trên LED matrix và OLED nhường chỗ ngay.
+
+**Khởi động:** trang kiểm tra hệ thống (mục 5) trong 2.5 s.
+
+**STANDBY:** 5-way lên/xuống đổi trang (4 trang). Hướng la bàn và thống kê nằm ở các trang phụ.
 
 ```
-Trang 1: cảm biến         Trang 2: điều hướng        Trang 3: nhiệm vụ
-+---------------------+   +---------------------+   +---------------------+
-|DRONE#3  STANDBY     |   |DRONE#3  NAVIGATION  |   |DRONE#3  MISSION     |
-|T 25.3C  H 61.2%     |   |HDG 237 SW           |   |HABITAT FOUND: 2x    |
-|P 1008.5hPa          |   |LAB BEARING 012 N    |   |MOANS HEARD:   3x    |
-|ALT   +3.2 m         |   |TURN  +135 deg       |   |ZOMBIES DOWN: 12     |
-|A  9.79 m/s2         |   |ALT   +3.2 m         |   |SHOTS FIRED:   6     |
-|G  1.25 dps          |   |LIGHT 62%            |   |FLIGHT 03:12         |
-|M  45.3 uT           |   |NOISE  8%            |   |                     |
-|STATUS: ALL NORMAL   |   |HABITAT: SEARCHING   |   |1x REPORT 2x BATTLE  |
-+---------------------+   +---------------------+   +---------------------+
+Trang 1: cảm biến         Trang 2: điều hướng        Trang 3: nhiệm vụ          Trang 4: hộp đen
++---------------------+   +---------------------+   +---------------------+   +---------------------+
+|DRONE#3 STANDBY  1/4 |   |DRONE#3 STANDBY  2/4 |   |DRONE#3 STANDBY  3/4 |   |DRONE#3 STANDBY  4/4 |
+|T 25.3C  H 61.2%     |   |HDG 237 SW           |   |HABITAT FOUND: 2x    |   |BLACK BOX: LOST DRONE|
+|P 1008.5hPa          |   |LAB BEARING 012 N    |   |MOANS HEARD:   3x    |   |WAVES 3  SHOTS 12    |
+|ALT   +3.2 m         |   |TURN  +135 deg       |   |ZOMBIES DOWN: 12     |   |CELLS CLEARED 28     |
+|A  9.79 m/s2         |   |ALT   +3.2 m         |   |SHOTS FIRED:   6     |   |END: RESCUE TIMEOUT  |
+|G  1.25 dps          |   |LIGHT 62%            |   |FLIGHT 03:12         |   |EVT 05/18 t=41.2s    |
+|M  45.3 uT           |   |NOISE  8% (BASE 6)   |   |                     |   |FIRE P5 (3,2) x7     |
+|STATUS: ALL NORMAL   |   |HABITAT: SEARCHING   |   |1x REPORT 2x BATTLE  |   |<> EVENTS  ^v PAGES  |
++---------------------+   +---------------------+   +---------------------+   +---------------------+
 ```
-Dòng cuối trang 1: `STATUS: ALL NORMAL` / `WARN: T HI, M HI` / sự kiện mới nhất trong 2 s (`ZOMBIES HEARD!`, `OBSTACLE AHEAD`, `HABITAT: FOUND`).
+- Dòng cuối trang 1 theo ưu tiên: `OBSTACLE AHEAD` → `WARN: T HI, M HI` → `REPORT SENT` / thông báo thường → `STATUS: ALL NORMAL`.
+- Trang 4: 5-way trái/phải lướt từng sự kiện của hộp đen.
 
-**BATTLE (buồng lái):**
+**BATTLE (màn hình hành động):**
 ```
 +---------------------+
-|DRONE#3  HDG 237 SW  |
-|LASER [######----] 6 |
-|POWER 5/10   BOOM    |   ← lúc cooldown: COOLDOWN 3.2s
-|AIM (3,2)   TARGET!  |
-|INFECTED 18/64  28%  |
-|ZOMBIES DOWN: 12     |
-|RADAR: CLEAR         |   ← sự kiện mới nhất / OVERRUN!
+|WAVE 2   TARGETS  5  |   ← lúc nghỉ: WAVE 2   CLEARED!
+|[■][■][■][■][■][■][ ]|   ← thanh năng lượng lớn, 2 dòng, 10 ô
+|[ ][ ][ ][ ]         |
+|ENERGY  6/10 P5 BOOM |   ← lúc cooldown: ENERGY  6/10 COOL3.2
+|AIM (3,2)    TARGET! |
+|DOWN 12   WAVES CLR 1|
+|RADAR: CLEAR         |   ← ZOMBIE CLOSE! > HIT!/MISSED!/AREA CLEARED! > OVERRUN!
 |1x CHARGE 2x STANDBY |
 +---------------------+
 ```
 
-**ATTACKED:** `!! UNDER ATTACK !!`, `DRONE #3`, `RESCUE IN  7 s`, `DOUBLE-PRESS TO RESCUE`.
-**TERMINATED:** `DRONE #3 LOST`, `COMMS OFFLINE`, `BLACK BOX SAVED`, `press RESET`.
+**ATTACKED:** `!! UNDER ATTACK !!`, `DRONE #3  RESCUE IN`, **số giây cứu hộ chữ lớn 2x**, `DOUBLE-PRESS TO RESCUE`, `SOS BEACON ON`.
+**TERMINATED:** `DRONE #3 LOST`, `COMMS OFFLINE`, `BLACK BOX SAVED`, `END: RESCUE TIMEOUT`, `press RESET`.
 
 Framebuffer 1 KB trong RAM, mỗi vòng lặp chỉ đẩy một trang (page) thay đổi.
 
@@ -283,12 +301,15 @@ Framebuffer 1 KB trong RAM, mỗi vòng lặp chỉ đẩy một trang (page) th
 
 - Hộp đen ghi **từng chuyến xuất kích**: bắt đầu khi **vào BATTLE** (xóa sạch bản ghi cũ, cả trong RAM lẫn trong flash), ghi tới khi về STANDBY hoặc tự hủy.
 - Ghi **32 sự kiện gần nhất** vào RAM (bộ đệm vòng). Mỗi bản ghi gồm thời điểm, loại sự kiện, mode và vài số liệu: vị trí bắn và số ô dọn, công suất, mức ồn, `Az` lúc bị lật…
-- Sự kiện được ghi: vào BATTLE, nạp, bắn, tiếng gầm, IR, quá 75 %, đổi chế độ bắn, bị lật, được cứu, về STANDBY, tự hủy.
+- Sự kiện được ghi: vào BATTLE, bắt đầu và dọn xong từng đợt, nạp, bắn, tiếng gầm, IR, quá 75 %, đổi chế độ bắn, bị lật, được cứu, về STANDBY, tự hủy.
+- **Bản tổng kết chuyến bay** lưu kèm (không bị mất khi bộ đệm vòng quay vòng): số đợt đã dọn, số phát bắn, số ô đã dọn, thời gian bay, **lý do kết thúc** (`RETURNED` = về STANDBY, `RESCUE TIMEOUT` = tự hủy). Được cứu thì vẫn là cùng một chuyến.
 - **Khi tự hủy**, bộ đệm cùng số hiệu drone được ghi **một lần** vào **trang flash cuối cùng** (cách xa vùng code ≈ 90 KB trong 2 MB flash), có mã kiểm tra. Nhờ vậy nó sống sót qua RESET và mất điện.
 - Lệnh `BLACKBOX` chỉ dùng ở **STANDBY**. Ở TERMINATED thì UART đã bị cắt nên không nhận lệnh được; cách đọc là nhấn RESET, board vào STANDBY, rồi gõ `BLACKBOX`.
   - Nếu flash có hộp đen của drone đã tự hủy: in hộp đen đó. Lúc khởi động cũng báo `[EVT] Black box of Drone #3 recovered (18 records). Type BLACKBOX to read`.
   - Nếu không: in chuyến BATTLE gần nhất đang có trong RAM (chuyến kết thúc bình thường).
+- Xem trên OLED: STANDBY trang 4, 5-way trái/phải lướt từng sự kiện (mục 13).
 - Ví dụ:
+  `[BBOX] LAST MISSION: waves cleared 3, shots fired 12, cells cleared 28, flight 95 s, END: RESCUE TIMEOUT`
   `[BBOX] t=41.2s BATTLE  FIRE p=5 at (3,2), 7 cells cleared`
   `[BBOX] t=44.8s BATTLE  FLIPPED Az=-9.7 m/s^2`
   `[BBOX] t=54.8s ATTACKED  SELF-DESTRUCT (no rescue)`
@@ -346,7 +367,9 @@ Board tự echo và vẽ lại dòng đang gõ khi có tin nhắn mới (TeraTer
 | Giữ lật để xác nhận | 300 ms |
 | Cửa sổ cứu hộ | 10 s |
 | Đọc DIP / 5-way | 200 ms / 30 ms |
-| Lây nhiễm | 1 ô mỗi 3 s |
+| Lây nhiễm | 1 ô mỗi 3 s ở đợt 1, nhanh dần 0.25 s mỗi đợt, tối thiểu 1 s |
+| Nghỉ giữa hai đợt | 2 s |
+| Bỏ qua micro sau khi buzzer tắt | 200 ms |
 | Cooldown laser | `p` giây (chỉ khi SW6 bật, `p ≥ 2`) |
 | Chờ giữa sự kiện sound/IR | 3 s |
 | Cập nhật la bàn | 100 ms |
@@ -375,3 +398,5 @@ Board tự echo và vẽ lại dòng đang gõ khi có tin nhắn mới (TeraTer
 | 13/10 | DIP: ở STANDBY là cấu hình (SW6 = khóa cấu hình), ở BATTLE là chế độ bắn (SW6 tắt = đúng đề, bật = chọn công suất + cooldown) |
 | 13/10 | Hộp đen ghi từng chuyến từ lúc vào BATTLE; `BLACKBOX` chỉ ở STANDBY; thoát TERMINATED bằng RESET |
 | 13/10 | Độ cao: mốc 0 m = `P0` lúc khởi động; chỉ đổi khi áp suất lọc lệch ≥ 0.1 hPa; `HOME` đặt lại mốc |
+| 17/10 | Theo bản improve: chiến đấu theo đợt, chống micro nghe nhầm buzzer, OLED ưu tiên theo tình huống + chữ lớn, hộp đen có tổng kết và xem trên OLED, trang kiểm tra hệ thống lúc khởi động |
+| 17/10 | Giữ nguyên DIP như v2.1 (không dùng NORMAL/HARD); đợt sau tự khó hơn đợt trước |
