@@ -376,6 +376,40 @@ Board tự echo và vẽ lại dòng đang gõ khi có tin nhắn mới (TeraTer
 
 ---
 
+## 17b. TÙY CHỌN: Wingman, hai drone cùng đội (chỉ làm khi còn thời gian)
+
+Đề viết phòng lab chế tạo "a batch of drones". Nhóm có hai board nên có thể cho hai drone (khác số hiệu, đặt bằng SW1–SW3) liên lạc với nhau. **Phụ trách: người A.** Thứ tự làm: sau khi xong toàn bộ phần đề và các phần thêm đã chốt.
+
+**Nguyên tắc:**
+- Không cắm board thứ hai thì firmware chạy y hệt bản một drone. Mọi hành vi bắt buộc của đề giữ nguyên.
+- Cứu hộ bằng nhấn đúp ngay trên drone bị lật vẫn là cách chính. Wingman chỉ là cách cứu thêm.
+
+**Phần cứng:** UART4, PA0 = TX (chân D1), PA1 = RX (chân D0), AF8, 115200 8N1. Nối chéo bằng 3 dây jumper: D1 board 1 → D0 board 2, D0 board 1 ← D1 board 2, GND – GND. Cáp Grove thẳng không dùng được vì nó nối TX với TX.
+
+**Giao thức** (dòng chữ kết thúc `\n`, nhận bằng ngắt vào ring buffer như USART1):
+
+| Tin | Khi nào | Ý nghĩa |
+|---|---|---|
+| `$HB,<id>,<mode>,<wave>` | Mỗi 1 s | Còn sống, đang ở mode nào |
+| `$SOS,<id>,<secs>` | Mỗi 1 s khi ATTACKED | Cầu cứu, còn bao nhiêu giây |
+| `$RESCUE,<to>,<from>` | Khi đồng đội bấm cứu | Cứu drone `<to>` |
+| `$BBOX,<id>,<waves>,<shots>,<cells>,<end>` | Ngay trước khi tự hủy | Bản tổng kết hộp đen |
+
+**Hành vi:**
+
+| Tình huống | Drone nhận làm gì | Hiển thị | UART về Command Centre |
+|---|---|---|---|
+| Nhận `$HB` | Ghi nhận đồng đội | OLED STANDBY trang 2 / BATTLE dòng 6: `WINGMAN #5: BATTLE` | Lần đầu: `[EVT] Wingman #5 connected` |
+| Không có `$HB` quá 3 s | | `WINGMAN LOST` | `[EVT] Wingman #5 signal lost` |
+| Nhận `$SOS` (đang ở STANDBY hoặc BATTLE) | Báo động | OLED ưu tiên cao nhất: `WINGMAN #3 SOS 7s`. LED matrix nháy chữ S. Buzzer báo động | `[EVT] Wingman #3 under attack! Rescue in 7 s. Press 5-way centre to assist` |
+| Bấm **giữa 5-way** khi đang có SOS (hoặc lệnh `ASSIST`) | Gửi `$RESCUE`. Lúc có SOS, nút giữa dùng để cứu thay vì khóa mục tiêu | `ASSIST SENT` | `[EVT] Assist sent to wingman #3` |
+| Drone bị lật nhận `$RESCUE` đúng số hiệu | Như nhấn đúp: được cứu, về BATTLE | Như được cứu | `[EVT] Drone #3 rescued by wingman #5!` |
+| Drone sắp tự hủy | Gửi `$BBOX` rồi mới cắt **mọi** liên lạc (cả USART1 lẫn UART4) | | |
+| Nhận `$BBOX` | Chuyển tiếp về Command Centre | `WINGMAN #3 LOST` | `[EVT] Wingman #3 lost. Last mission: 3 waves, 12 shots, 28 cells, END: RESCUE TIMEOUT` |
+| Hai board trùng số hiệu | | | `[EVT] Wingman has the same drone ID, change SW1-SW3` |
+
+---
+
 ## 18. Nhật ký quyết định
 
 | Ngày | Quyết định |
@@ -400,3 +434,4 @@ Board tự echo và vẽ lại dòng đang gõ khi có tin nhắn mới (TeraTer
 | 13/10 | Độ cao: mốc 0 m = `P0` lúc khởi động; chỉ đổi khi áp suất lọc lệch ≥ 0.1 hPa; `HOME` đặt lại mốc |
 | 17/10 | Theo bản improve: chiến đấu theo đợt, chống micro nghe nhầm buzzer, OLED ưu tiên theo tình huống + chữ lớn, hộp đen có tổng kết và xem trên OLED, trang kiểm tra hệ thống lúc khởi động |
 | 17/10 | Giữ nguyên DIP như v2.1 (không dùng NORMAL/HARD); đợt sau tự khó hơn đợt trước |
+| 19/10 | Thêm mục tùy chọn Wingman (hai drone liên lạc qua UART4), làm cuối cùng, người A phụ trách |
