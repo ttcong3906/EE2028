@@ -470,6 +470,7 @@ static bool i2c1_ready = false;
 #define I2C_TIMING_50K  0x10420F13UL   /* same with PRESC = 1: everything x2 */
 #define I2C_TIMING_25K  0x30420F13UL   /* PRESC = 3: x4 */
 static uint32_t i2c_timing = I2C_TIMING_100K;
+static int      i2c_khz = 100;
 
 static void I2C1_Init(void)
 {
@@ -493,6 +494,14 @@ static void I2C1_Init(void)
     hi2c1.Init.GeneralCallMode  = I2C_GENERALCALL_DISABLE;
     hi2c1.Init.NoStretchMode    = I2C_NOSTRETCH_DISABLE;
     i2c1_ready = (HAL_I2C_Init(&hi2c1) == HAL_OK);
+}
+
+static void i2c1_set_speed(int khz)
+{
+    i2c_khz = khz;
+    i2c_timing = khz >= 100 ? I2C_TIMING_100K : (khz >= 50 ? I2C_TIMING_50K : I2C_TIMING_25K);
+    HAL_I2C_DeInit(&hi2c1);
+    I2C1_Init();
 }
 
 /* Short busy wait (roughly microseconds at 4 MHz), no SysTick needed. */
@@ -580,16 +589,28 @@ static const char *i2c_err_name(uint32_t e)
     return e ? "ERROR" : "BUSY";
 }
 
+/* How to do "write command, then read": the 5-way's firmware is picky, so the
+ * probe tries all three and keeps the one that works. */
+enum { MS_M_STOP = 0, MS_M_STOP_WAIT, MS_M_RESTART, MS_M_COUNT };
+static const char *const ms_method_name[MS_M_COUNT] = { "stop + read", "stop + 5 ms + read", "repeated start" };
+static uint8_t ms_method = MS_M_STOP;
+
 static bool i2c1_cmd_read(uint8_t addr7, uint8_t cmd, uint8_t *rx, uint16_t n)
 {
     for (int k = 0; i2c1_ready; k++) {
         uint32_t t0 = HAL_GetTick();
         const char *phase = "write cmd";
-        bool ok = HAL_I2C_Master_Transmit(&hi2c1, (uint16_t)(addr7 << 1), &cmd, 1, i2c_cmd_timeout) == HAL_OK;
-        if (ok) {
-            i2c_gap(200);
-            phase = "read data";
-            ok = HAL_I2C_Master_Receive(&hi2c1, (uint16_t)(addr7 << 1), rx, n, i2c_cmd_timeout) == HAL_OK;
+        bool ok;
+        if (ms_method == MS_M_RESTART) {
+            phase = "write+restart+read";
+            ok = HAL_I2C_Mem_Read(&hi2c1, (uint16_t)(addr7 << 1), cmd, I2C_MEMADD_SIZE_8BIT, rx, n, i2c_cmd_timeout) == HAL_OK;
+        } else {
+            ok = HAL_I2C_Master_Transmit(&hi2c1, (uint16_t)(addr7 << 1), &cmd, 1, i2c_cmd_timeout) == HAL_OK;
+            if (ok) {
+                if (ms_method == MS_M_STOP_WAIT) HAL_Delay(5); else i2c_gap(200);
+                phase = "read data";
+                ok = HAL_I2C_Master_Receive(&hi2c1, (uint16_t)(addr7 << 1), rx, n, i2c_cmd_timeout) == HAL_OK;
+            }
         }
         if (ok) return true;
         snprintf(i2c_diag, sizeof(i2c_diag), "0x%02X cmd 0x%02X: %s failed (%s) after %lu ms, SCL %d SDA %d",
@@ -1040,26 +1061,55 @@ static uint32_t t_fw = 0, fw_hold_t0 = 0, fw_rep_t = 0;
 static uint32_t fw_center_t0 = 0;
 static bool     fw_center_held = false;              /* hold action already done */
 
-static uint8_t fiveway_acked = 0;                    /* address that ACKed but gave no valid ID */
+static uint8_t fiveway_acked = 0;                    /* address that ACKs (5-way candidate) */
+static bool    fiveway_failed = false;               /* ACKs but no combination gave the ID */
 
-static void fiveway_probe(void)
+static bool fiveway_try_id(uint8_t a, bool verbose)
 {
-#if ENABLE_FIVEWAY
-    fiveway_acked = 0;
-    for (uint8_t a = 0x03; a <= 0x08 && !fiveway_addr; a++) {
-        if (!i2c1_present(a)) continue;               /* quick ACK test first */
-        fiveway_acked = a;
-        for (int tries = 0; tries < 3; tries++) {     /* the Seeed library also retries */
-            uint8_t id[4];
-            if (!i2c1_cmd_read(a, MS_CMD_GET_DEV_ID, id, 4)) continue;
-            uint16_t vid = (uint16_t)(id[0] | (id[1] << 8)), pid = (uint16_t)(id[2] | (id[3] << 8));
-            if (vid == MS_VID && pid == MS_PID_5WAY) { fiveway_addr = a; break; }
+    for (int tries = 0; tries < 2; tries++) {         /* the Seeed library also retries */
+        uint8_t id[4] = {0};
+        bool ok = i2c1_cmd_read(a, MS_CMD_GET_DEV_ID, id, 4);
+        uint16_t vid = (uint16_t)(id[0] | (id[1] << 8)), pid = (uint16_t)(id[2] | (id[3] << 8));
+        if (ok && vid == MS_VID && pid == MS_PID_5WAY) {
+            if (verbose) uart_printf("[CMD]   %3d kHz, %-18s: OK (ID %02X %02X %02X %02X)\r\n",
+                                     i2c_khz, ms_method_name[ms_method], id[0], id[1], id[2], id[3]);
+            return true;
+        }
+        if (ok) {
             snprintf(i2c_diag, sizeof(i2c_diag), "0x%02X ID read gave %02X %02X %02X %02X (want 86 28 02 00)",
                      a, id[0], id[1], id[2], id[3]);
             uint8_t junk;                              /* Seeed library: read 1 byte to re-align */
             HAL_I2C_Master_Receive(&hi2c1, (uint16_t)(a << 1), &junk, 1, I2C_TIMEOUT_MS);
         }
     }
+    if (verbose) uart_printf("[CMD]   %3d kHz, %-18s: %s\r\n", i2c_khz, ms_method_name[ms_method], i2c_diag);
+    return false;
+}
+
+/* Find the 5-way: an address that ACKs, then every speed x read method until
+ * the device ID comes back. The working combination is kept. */
+static void fiveway_probe(bool verbose)
+{
+#if ENABLE_FIVEWAY
+    static const int speeds[3] = { 100, 50, 25 };
+    fiveway_acked = 0;
+    fiveway_failed = false;
+    if (i2c_khz != 100) i2c1_set_speed(100);
+    for (uint8_t a = 0x03; a <= 0x08 && !fiveway_acked; a++)
+        if (i2c1_present(a)) fiveway_acked = a;
+    if (!fiveway_acked) return;
+    for (int si = 0; si < 3; si++) {
+        if (i2c_khz != speeds[si]) i2c1_set_speed(speeds[si]);
+        for (uint8_t m = 0; m < MS_M_COUNT; m++) {
+            ms_method = m;
+            if (fiveway_try_id(fiveway_acked, verbose)) { fiveway_addr = fiveway_acked; return; }
+        }
+    }
+    fiveway_failed = true;                            /* back to the default for the matrix */
+    ms_method = MS_M_STOP;
+    i2c1_set_speed(100);
+#else
+    (void)verbose;
 #endif
 }
 
@@ -2074,7 +2124,7 @@ static void cmd_help(void)
                "[CMD]   battle:  AIM <dx> <dy> | LOCK | POWER RULE|1..5|NEXT\r\n"
                "[CMD]   standby: HOME | CALIB | BLACKBOX | ID <1..9> | MOUNT CHIPUP|ZDOWN | MUTE ON|OFF | ROLE DRONE|CONTROLLER\r\n"
 #if ENABLE_DEV_TOOLS
-               "[CMD]   dev: I2CSCAN | I2CDUMP <addr> <cmd> <n> | I2CSPEED 100|50|25 | INPUTS | MAG\r\n"
+               "[CMD]   dev: I2CSCAN | I2CDUMP <addr> <cmd> <n> | I2CSPEED 100|50|25 | FIVEWAY | INPUTS | MAG\r\n"
 #endif
                );
 }
@@ -2343,11 +2393,18 @@ static void cmd_exec(char *line)
         int k = arg1 ? atoi(arg1) : 0;
         uint32_t t = k == 100 ? I2C_TIMING_100K : (k == 50 ? I2C_TIMING_50K : (k == 25 ? I2C_TIMING_25K : 0));
         if (!t) { uart_write("[CMD] ERR usage: I2CSPEED 100 | 50 | 25   (kHz)\r\n"); return; }
-        i2c_timing = t;
-        HAL_I2C_DeInit(&hi2c1);
-        I2C1_Init();
-        mx_ok = false; fiveway_addr = 0; mx_shown_valid = false;     /* re-probed within 2 s */
+        (void)t;
+        i2c1_set_speed(k);
+        mx_ok = false; mx_shown_valid = false;                       /* re-probed within 2 s */
         uart_printf("[CMD] OK I2C at %d kHz, modules will be re-probed\r\n", k);
+        return;
+    }
+    if (!strcmp(verb, "FIVEWAY")) {
+        uart_write("[CMD] 5-way probe: every speed x read method\r\n");
+        fiveway_addr = 0;
+        fiveway_probe(true);
+        if (fiveway_addr) uart_printf("[CMD] OK 5-way at 0x%02X: %d kHz, %s\r\n", fiveway_addr, i2c_khz, ms_method_name[ms_method]);
+        else uart_printf("[CMD] 5-way not working (%s)\r\n", fiveway_acked ? "address ACKs, ID read fails" : "no answer at 0x03..0x08");
         return;
     }
     if (!strcmp(verb, "MAG")) {                          /* compass debugging */
@@ -2481,14 +2538,16 @@ static void app_init(void)
     mx_init();
     buzzer_init();
     ir_init();
-    fiveway_probe();
+    fiveway_probe(false);
     GPIO_IT_Init();
 
     uart_printf("\r\n=== Drone #%d online === mount: %s, silent: %s\r\n", cfg.drone_id,
                 cfg.mount_down ? "Z+ down" : "chip-up", cfg.muted ? "ON" : "OFF");
-    if (!fiveway_addr && fiveway_acked)
-        uart_printf("[EVT] 5-way diag: device at 0x%02X answers its address but not the ID read. Last: %s\r\n",
-                    fiveway_acked, i2c_diag);
+    if (fiveway_addr)
+        uart_printf("[EVT] 5-way at 0x%02X: %d kHz, %s\r\n", fiveway_addr, i2c_khz, ms_method_name[ms_method]);
+    else if (fiveway_acked)
+        uart_printf("[EVT] 5-way diag: device at 0x%02X answers its address but no speed/read method gave the ID. "
+                    "Last: %s. Type FIVEWAY for details\r\n", fiveway_acked, i2c_diag);
     uart_printf("[EVT] System check: sensors %s, LED matrix %s, 5-way %s, IR %s. Type HELP for commands.\r\n",
                 sensors_ok ? "OK" : "FAIL", mx_ok ? "OK" : "NOT FOUND", fiveway_addr ? "OK" : "NOT FOUND",
                 ir_ok ? "OK" : "NOT FOUND");
@@ -2545,8 +2604,8 @@ static void app_loop(void)
             ir_ok = ir_probe();
             if (ir_ok) { ir_same = 0; uart_write("[EVT] IR sensor connected\r\n"); }
         }
-        if (!fiveway_addr && ENABLE_FIVEWAY) {
-            fiveway_probe();
+        if (!fiveway_addr && !fiveway_failed && ENABLE_FIVEWAY) {   /* newly plugged in */
+            fiveway_probe(false);
             if (fiveway_addr) uart_printf("[EVT] 5-way switch connected at 0x%02X\r\n", fiveway_addr);
         }
     }

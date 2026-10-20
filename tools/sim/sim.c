@@ -54,6 +54,8 @@ HAL_StatusTypeDef HAL_I2C_Master_Receive(I2C_HandleTypeDef *h, uint16_t a, uint8
     }
     return HAL_ERROR;
 }
+HAL_StatusTypeDef HAL_I2C_Mem_Read(I2C_HandleTypeDef *h, uint16_t a, uint16_t mem, uint16_t ms, uint8_t *d, uint16_t n, uint32_t to)
+{ (void)ms; uint8_t c = (uint8_t)mem; if (HAL_I2C_Master_Transmit(h, a, &c, 1, to) != HAL_OK) return HAL_ERROR; return HAL_I2C_Master_Receive(h, a, d, n, to); }
 HAL_StatusTypeDef HAL_UART_Init(UART_HandleTypeDef *h) { (void)h; return HAL_OK; }
 HAL_StatusTypeDef HAL_UART_DeInit(UART_HandleTypeDef *h) { (void)h; return HAL_OK; }
 HAL_StatusTypeDef HAL_UART_Transmit_IT(UART_HandleTypeDef *h, uint8_t *d, uint16_t n) { (void)h; tx_ptr = d; tx_n = n; return HAL_OK; }

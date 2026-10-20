@@ -148,3 +148,5 @@ enum { GPIO_PULLDOWN = 300 };
 #define HAL_I2C_ERROR_AF 0x04u
 #define HAL_I2C_ERROR_OVR 0x08u
 #define HAL_I2C_ERROR_TIMEOUT 0x20u
+#define I2C_MEMADD_SIZE_8BIT 1u
+HAL_StatusTypeDef HAL_I2C_Mem_Read(I2C_HandleTypeDef *h, uint16_t a, uint16_t mem, uint16_t ms, uint8_t *d, uint16_t n, uint32_t to);
