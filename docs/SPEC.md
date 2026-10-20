@@ -1,4 +1,4 @@
-# EE2028 A2 — The Last of EE2028: Spec v3.2
+# EE2028 A2 — The Last of EE2028: Spec v3.2 (đã chốt 20/10)
 
 Tài liệu này là "hợp đồng" của nhóm: code viết đúng theo đây, muốn đổi hành vi thì sửa file này trước.
 Firmware nằm trong **một file `Core/Src/main.c`** (cả drone lẫn tay cầm, chọn bằng cấu hình `ROLE`). Chương trình laptop nằm trong `tools/dashboard.py`. Lịch sử quyết định ở mục 18.
@@ -72,7 +72,7 @@ Ký hiệu *(đề)* = yêu cầu bắt buộc của đề bài. **Drone đứng
 | Mục | Mặc định | Đổi bằng |
 |---|---|---|
 | **Vai trò board** | `DRONE` | `ROLE DRONE\|CONTROLLER` (đổi xong tự khởi động lại) |
-| **Số hiệu drone** | Một chữ số 1–9, tính từ **UID 96-bit** của chip | `ID <1..9>` |
+| **Số hiệu drone** | **3** (Drone #3) | `ID <1..9>` |
 | **Kiểu lắp** | Mặt chip hướng lên là bình thường | `MOUNT CHIPUP\|ZDOWN` (`ZDOWN` = Z+ hướng xuống đất, đúng chữ đề) |
 | **Im lặng** | Tắt | `MUTE ON\|OFF` (SOS vẫn kêu) |
 | **WiFi** (giai đoạn cuối) | Chưa cấu hình | `WIFI <ssid> <password>`, `SERVER <ip> <port>` |
@@ -312,6 +312,14 @@ Python + Tkinter + pyserial, chạy bằng Python trên Windows (cổng COM nằ
 | 4 | Dashboard qua USB; tay cầm (firmware `ROLE CONTROLLER` + phần chuyển lệnh trong dashboard) |
 | 5 | WiFi (tùy chọn) |
 
+**Chia việc:**
+
+| Người | Phần |
+|---|---|
+| A | Firmware drone: phần *(đề)*, 4 module, bản đồ + laser, la bàn, nơi ở, hộp đen, cấu hình flash |
+| B | `tools/dashboard.py`, firmware tay cầm (`ROLE CONTROLLER`), phần chuyển lệnh tay cầm → drone; WiFi nếu còn thời gian |
+| Cả hai | Giai đoạn 1 (UART + console); chốt định dạng `[HUD]`/`[MAP]` (mục 16) trước khi tách ra |
+
 **Nhật ký quyết định:**
 
 | Ngày | Quyết định |
@@ -325,4 +333,4 @@ Python + Tkinter + pyserial, chạy bằng Python trên Windows (cổng COM nằ
 | 20/10 | **Dashboard Python trên laptop thay OLED**; UART trước, WiFi là giai đoạn cuối tùy chọn |
 | 20/10 | Bộ module: **LED matrix, buzzer, 5-way, IR**. Giữ buzzer trên board để drone tự kêu SOS |
 | 20/10 | **Board 2 = tay cầm phi công** qua USB, dashboard chuyển thành lệnh UART; giữ 5-way để drone tự đủ chức năng |
-| 20/10 | Số hiệu drone một chữ số 1–9 từ UID; cấu hình bằng lệnh, lưu flash; 5-way giữa giữ 1 s ở STANDBY = đăng ký lại phòng lab |
+| 20/10 | Spec v3.2 được duyệt. Drone mặc định **#3** (đổi bằng `ID 1..9`); vai trò board bằng lệnh `ROLE` lưu flash; dashboard Tkinter chạy trên Windows; cấu hình bằng lệnh, lưu flash; 5-way giữa giữ 1 s ở STANDBY = đăng ký lại phòng lab |
