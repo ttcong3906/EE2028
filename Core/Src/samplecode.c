@@ -1374,6 +1374,7 @@ static void enter_battle(bool from_rescue)
         uart_write("Entering BATTLE MODE\r\n");
         flip_armed = true;
         aim_manual = false;
+        weapon_sel = false;                             /* every sortie starts in RULE mode */
         bz_fx(SND(SND_MODE));
         bb_clear();                                     /* new sortie, new black box */
         if (bb_flash_valid) { flash_erase_tail(FLASH_PAGE_BLACKBOX); bb_flash_valid = false; }

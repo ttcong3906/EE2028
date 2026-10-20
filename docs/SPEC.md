@@ -150,6 +150,7 @@ BATTLE không gửi telemetry định kỳ, chỉ gửi sự kiện.
   - **RULE** (mặc định, đúng đề): mỗi phát `p = 5`, đủ năng lượng là tự bắn ngay, **không cooldown** *(đề)*.
   - **SEL** (5-way giữa giữ 1 s, tay cầm nhấn đúp, hoặc lệnh `POWER 1..5`; `POWER RULE` để về đúng đề): `p` = 1–5. Sau mỗi phát có **cooldown `p` giây**, riêng `p = 1` không có. Trong lúc cooldown vẫn nạp được. Hết cooldown mà đủ năng lượng thì tự bắn ngay.
 - Tự bắn khi năng lượng ≥ `p`, mỗi lần **một phát**, trừ `p`. Năng lượng thừa để dành, tối đa 10/10.
+- Mỗi lần vào BATTLE (chuyến xuất kích mới) chế độ bắn về **RULE**. Được cứu thì giữ nguyên chế độ đang dùng.
 
 | `p` | Vùng nổ | Âm thanh |
 |---|---|---|
