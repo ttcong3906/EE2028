@@ -14,3 +14,4 @@ Release/
 # IDE / OS
 .metadata/
 .DS_Store
+__pycache__/
