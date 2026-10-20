@@ -7,8 +7,9 @@
  * saved in flash, default DRONE):
  *
  *   DRONE       the assignment + 4 Grove modules
- *     STANDBY   scouting: 6-sensor telemetry (spec), compass arrow home to the
- *               lab, human-habitat finder (T + H), obstacle warning (IR)
+ *     STANDBY   scouting: 6-sensor telemetry (spec), scouting map on the LED
+ *               matrix (fly with the 5-way, find hidden nests under the fog),
+ *               human-habitat finder (T + H), obstacle blocks the scout (IR)
  *     BATTLE    LED matrix = spreading infection map, 5-way switch = aiming,
  *               laser charge/auto-fire (spec), selectable weapon power,
  *               zombie at close range (IR)
@@ -80,7 +81,6 @@ extern uint8_t SENSOR_IO_Read(uint8_t Addr, uint8_t Reg);
 #define MATRIX_I2C_ADDR         0x70
 #define MATRIX_FLIP_X           0      /* 1 if letters/arrows are mirrored  */
 #define IR_DETECT_LEVEL         GPIO_PIN_RESET  /* pin level when object close */
-#define COMPASS_INVERT          0      /* 1 if the arrow turns the wrong way */
 
 /* --- Seeed Grove multi-switch (5-way tactile) --- */
 #define MS_CMD_GET_DEV_ID       0x00
@@ -119,8 +119,6 @@ extern uint8_t SENSOR_IO_Read(uint8_t Addr, uint8_t Reg);
 #define I2C_TIMEOUT_MS          25U    /* Grove I2C transfers (5-way may stretch the clock) */
 #define MODULE_BOOT_MS          300U   /* let the 5-way's own MCU start before probing */
 #define MODULE_REPROBE_MS       2000U  /* STANDBY: look again for unplugged modules */
-#define COMPASS_PERIOD_MS       100U
-#define CALIB_MS                10000U
 #define IR_POLL_MS              20U
 #define IR_STABLE_SAMPLES       3U
 #define IR_EVENT_COOLDOWN_MS    3000U
@@ -134,6 +132,9 @@ extern uint8_t SENSOR_IO_Read(uint8_t Addr, uint8_t Reg);
 #define CROSSHAIR_BLINK_MS      125U   /* 4 Hz */
 #define ICON_MS                 1000U
 #define HOUSE_ICON_MS           2000U
+#define SCOUT_NESTS             3      /* hidden nests per area = wave 1 outbreaks */
+#define SCOUT_BLOCK_MSG_MS      1000U  /* IR blocking message at most 1/s */
+#define SCOUT_SEND_MS           1000U  /* dashboard [SCOUT] refresh */
 #define BOOT_ID_MS              1000U
 #define BEAM_FRAME_MS           50U
 #define BLAST_FLASH_MS          150U
@@ -644,18 +645,6 @@ static const uint8_t GL_DIGIT[10][8] = {
     {0x3C,0x60,0x7C,0x66,0x66,0x66,0x3C,0x00}, {0x7E,0x06,0x0C,0x18,0x30,0x30,0x30,0x00},
     {0x3C,0x66,0x66,0x3C,0x66,0x66,0x3C,0x00}, {0x3C,0x66,0x66,0x3E,0x06,0x0C,0x38,0x00},
 };
-/* Compass arrows: index 0 = straight ahead (up), then clockwise every 45 deg. */
-static const uint8_t GL_ARROW[8][8] = {
-    {0x18,0x3C,0x7E,0xDB,0x18,0x18,0x18,0x18}, /* N  */
-    {0x1F,0x03,0x05,0x09,0x10,0x20,0x40,0x80}, /* NE */
-    {0x08,0x0C,0x06,0xFF,0xFF,0x06,0x0C,0x08}, /* E  */
-    {0x80,0x40,0x20,0x10,0x09,0x05,0x03,0x1F}, /* SE */
-    {0x18,0x18,0x18,0x18,0xDB,0x7E,0x3C,0x18}, /* S  */
-    {0x01,0x02,0x04,0x08,0x90,0xA0,0xC0,0xF8}, /* SW */
-    {0x10,0x30,0x60,0xFF,0xFF,0x60,0x30,0x10}, /* W  */
-    {0xF8,0xC0,0xA0,0x90,0x08,0x04,0x02,0x01}, /* NW */
-};
-
 static uint8_t mx_map(uint8_t b)
 {
 #if MATRIX_FLIP_X
@@ -945,73 +934,6 @@ static uint32_t check_thresholds(const sensors_t *s)
         if (th[i].use_high && s->v[i] > th[i].high) mask |= 1UL << (2 * i + 1);
     }
     return mask;
-}
-
-/* --- Compass: tilt-compensated heading, hard-iron offsets from CALIB --- */
-static float    mag_off_x = 0.0f, mag_off_y = 0.0f;
-static float    hdg_c = 1.0f, hdg_s = 0.0f;        /* smoothed unit vector */
-static int      heading_deg = 0, lab_bearing = 0;
-static uint32_t t_compass = 0;
-static bool     calib_active = false;
-static uint32_t calib_t0 = 0;
-static float    cal_min_x, cal_max_x, cal_min_y, cal_max_y;
-
-static float compass_raw_deg(void)
-{
-    float a[3];
-    int16_t m[3] = {0};
-    accel_read(a);
-    BSP_MAGNETO_GetXYZ(m);
-    float mx = (float)m[0] - mag_off_x;
-    float my = ((float)m[1] - mag_off_y) * (float)flip_sign();
-    float mz = (float)m[2] * (float)flip_sign();
-
-    if (calib_active) {
-        float rx = (float)m[0], ry = (float)m[1];
-        if (rx < cal_min_x) cal_min_x = rx;
-        if (rx > cal_max_x) cal_max_x = rx;
-        if (ry < cal_min_y) cal_min_y = ry;
-        if (ry > cal_max_y) cal_max_y = ry;
-    }
-
-    float roll  = atan2f(a[1], a[2]);
-    float pitch = atan2f(-a[0], sqrtf(a[1] * a[1] + a[2] * a[2]));
-    float xh = mx * cosf(pitch) + mz * sinf(pitch);
-    float yh = mx * sinf(roll) * sinf(pitch) + my * cosf(roll) - mz * sinf(roll) * cosf(pitch);
-    float deg = atan2f(-yh, xh) * 57.29578f;
-#if COMPASS_INVERT
-    deg = -deg;
-#endif
-    if (deg < 0) deg += 360.0f;
-    return deg;
-}
-
-static void compass_update(bool force)
-{
-    if (!force && !elapsed(t_compass, COMPASS_PERIOD_MS)) return;
-    t_compass = HAL_GetTick();
-    float d = compass_raw_deg() / 57.29578f;
-    float k = force ? 1.0f : 0.3f;
-    hdg_c = (1.0f - k) * hdg_c + k * cosf(d);
-    hdg_s = (1.0f - k) * hdg_s + k * sinf(d);
-    float deg = atan2f(hdg_s, hdg_c) * 57.29578f;
-    if (deg < 0) deg += 360.0f;
-    heading_deg = ((int)(deg + 0.5f)) % 360;
-}
-
-static const char *cardinal(int deg)
-{
-    static const char *n[8] = { "N", "NE", "E", "SE", "S", "SW", "W", "NW" };
-    return n[((deg + 22) % 360) / 45];
-}
-
-/* Signed turn (-180..180) needed to face the lab. */
-static int turn_to_lab(void)
-{
-    int d = lab_bearing - heading_deg;
-    while (d > 180)  d -= 360;
-    while (d < -180) d += 360;
-    return d;
 }
 
 /* ============================================================================
@@ -1320,7 +1242,29 @@ static int map_count(void)
     return n;
 }
 
-/* Wave n: 2 + n outbreaks in the far half of the map, spreading faster each wave. */
+/* --- Scouting (STANDBY): the same 8x8 area under fog, with hidden nests --- */
+static uint8_t  scout_fog[8];            /* bit set = not scanned yet */
+static uint8_t  scout_nest[8];           /* hidden nests */
+static uint8_t  scout_found[8];          /* nests located */
+static int      scout_x = 3, scout_y = 7, scout_found_n = 0;
+static bool     scout_ready = false;
+static bool     scout_changed = true;
+static uint32_t t_scout_block = 0;
+
+static inline bool rbit(const uint8_t r[8], int x, int y) { return (r[y] & (0x80U >> x)) != 0; }
+static inline void rset(uint8_t r[8], int x, int y)       { r[y] |= (uint8_t)(0x80U >> x); }
+static inline void rclr(uint8_t r[8], int x, int y)       { r[y] &= (uint8_t)~(0x80U >> x); }
+
+static int popcount8(const uint8_t r[8])
+{
+    int n = 0;
+    for (int y = 0; y < 8; y++) for (int x = 0; x < 8; x++) n += rbit(r, x, y);
+    return n;
+}
+
+/* Wave n: 2 + n outbreaks in the far half of the map, spreading faster each wave.
+ * Wave 1 uses the scouted area: located nests are bigger (plus of 5 cells),
+ * nests nobody found are a single cell. */
 static void wave_start(int n)
 {
     wave_no = n;
@@ -1329,23 +1273,48 @@ static void wave_start(int n)
     uint32_t dec = (uint32_t)(n - 1) * WAVE_SPREAD_STEP_MS;
     spread_ms = (dec + WAVE_SPREAD_MIN_MS < WAVE_SPREAD_START_MS) ? WAVE_SPREAD_START_MS - dec : WAVE_SPREAD_MIN_MS;
     memset(map_rows, 0, sizeof(map_rows));
-    for (int placed = 0, tries = 0; placed < seeds && tries < 200; tries++) {
-        int x = (int)(rng() % 8U), y = (int)(rng() % 5U);
-        if (!cell(x, y)) { cell_set(x, y); placed++; }
+    int big = 0;
+    if (n == 1 && scout_ready) {
+        seeds = 0;
+        for (int y = 0; y < 8; y++) for (int x = 0; x < 8; x++) {
+            if (!rbit(scout_nest, x, y)) continue;
+            seeds++;
+            cell_set(x, y);
+            if (rbit(scout_found, x, y)) {
+                big++;
+                static const int dx[4] = { 0, 0, -1, 1 }, dy[4] = { -1, 1, 0, 0 };
+                for (int k = 0; k < 4; k++) if (inside(x + dx[k], y + dy[k])) cell_set(x + dx[k], y + dy[k]);
+            }
+        }
+    } else {
+        for (int placed = 0, tries = 0; placed < seeds && tries < 200; tries++) {
+            int x = (int)(rng() % 8U), y = (int)(rng() % 5U);
+            if (!cell(x, y)) { cell_set(x, y); placed++; }
+        }
     }
     overrun_reported = false;
     map_live = true;
     wave_active = true;
     t_spread = HAL_GetTick();
-    uart_printf("[EVT] Wave %d incoming: %d outbreaks, spreading every %lu.%lu s\r\n",
-                n, seeds, (unsigned long)(spread_ms / 1000U), (unsigned long)((spread_ms % 1000U) / 100U));
-    bb_log(BB_WAVE, n, seeds, 0, 0);
+    char extra[48] = "";
+    if (big) snprintf(extra, sizeof(extra), " (%d scouted nest%s, bigger)", big, big > 1 ? "s" : "");
+    uart_printf("[EVT] Wave %d incoming: %d outbreaks%s, spreading every %lu.%lu s\r\n",
+                n, seeds, extra, (unsigned long)(spread_ms / 1000U), (unsigned long)((spread_ms % 1000U) / 100U));
+    bb_log(BB_WAVE, n, seeds, big, 0);
 }
 
 static void map_new(void)
 {
     aim_x = 3; aim_y = 3;
     wave_start(1);
+    if (scout_ready && scout_found_n) {               /* crosshair on the nearest located nest */
+        int best = 99;
+        for (int y = 0; y < 8; y++) for (int x = 0; x < 8; x++) {
+            int d = abs(x - 3) + abs(y - 3);
+            if (rbit(scout_found, x, y) && d < best) { best = d; aim_x = x; aim_y = y; }
+        }
+        uart_printf("[EVT] Target locked on scouted nest at (%d,%d)\r\n", aim_x, aim_y);
+    }
 }
 
 static void map_spread(void)
@@ -1399,6 +1368,67 @@ static void aim_nearest(void)
     aim_x = bx; aim_y = by;
 }
 
+/* Scan the 3x3 cells around the scout drone. */
+static void scout_scan(bool announce)
+{
+    for (int dy = -1; dy <= 1; dy++) for (int dx = -1; dx <= 1; dx++) {
+        int x = scout_x + dx, y = scout_y + dy;
+        if (!inside(x, y)) continue;
+        rclr(scout_fog, x, y);
+        if (rbit(scout_nest, x, y) && !rbit(scout_found, x, y)) {
+            rset(scout_found, x, y);
+            scout_found_n++;
+            if (announce) {
+                uart_printf("[EVT] Scouting: nest found at (%d,%d) (%d/%d)\r\n", x, y, scout_found_n, SCOUT_NESTS);
+                if (scout_found_n == SCOUT_NESTS) {
+                    uart_printf("[EVT] Scouting complete: all %d nests located\r\n", SCOUT_NESTS);
+                    bz_fx(SND(SND_VICTORY));
+                } else {
+                    bz_fx(SND(SND_ALARM));
+                }
+            }
+        }
+    }
+    scout_changed = true;
+}
+
+/* New area: everything under fog, nests hidden in rows 0..5, drone at the bottom. */
+static void scout_new(void)
+{
+    memset(scout_fog, 0xFF, sizeof(scout_fog));
+    memset(scout_nest, 0, sizeof(scout_nest));
+    memset(scout_found, 0, sizeof(scout_found));
+    for (int placed = 0, tries = 0; placed < SCOUT_NESTS && tries < 200; tries++) {
+        int x = (int)(rng() % 8U), y = (int)(rng() % 6U);
+        if (!rbit(scout_nest, x, y)) { rset(scout_nest, x, y); placed++; }
+    }
+    scout_x = 3; scout_y = 7; scout_found_n = 0;
+    scout_ready = true;
+    scout_scan(false);
+}
+
+static int scout_scanned(void)
+{
+    return 64 - popcount8(scout_fog);
+}
+
+static void scout_move(int dx, int dy)
+{
+    if (state != ST_STANDBY || !scout_ready) return;
+    if (ir_ok && ir_detect) {                         /* obstacle: hold position */
+        if (elapsed(t_scout_block, SCOUT_BLOCK_MSG_MS)) {
+            t_scout_block = HAL_GetTick();
+            uart_write("[EVT] Obstacle at close range, holding position\r\n");
+            bz_fx(SND(SND_WARN));
+        }
+        return;
+    }
+    int nx = scout_x + dx, ny = scout_y + dy;
+    if (!inside(nx, ny) || (nx == scout_x && ny == scout_y)) return;
+    scout_x = nx; scout_y = ny;
+    scout_scan(true);
+}
+
 /* ============================================================================
  * 13. DASHBOARD LINES ([HUD], [MAP]) AND LED MATRIX CONTENT
  * ==========================================================================*/
@@ -1430,12 +1460,27 @@ static void hud_send(void)
     int32_t cd = cooldown_active ? (int32_t)(cooldown_until - HAL_GetTick()) : 0;
     if (cd < 0) cd = 0;
     uart_printf("[HUD] ID %d MODE %s E %d P %d SEL %d CD %ld.%ld WAVE %d TGT %d DOWN %lu SHOTS %lu "
-                "HDG %d LAB %d ALT %.1f HAB %d RESC %d IR %d CAL %d\r\n",
+                "ALT %.1f HAB %d RESC %d IR %d\r\n",
                 cfg.drone_id, mode_name(state), laser_energy, weapon_power(), weapon_sel ? 1 : 0,
                 (long)(cd / 1000), (long)((cd % 1000) / 100), map_live ? wave_no : 0,
                 map_live ? map_count() : 0, (unsigned long)zombies_down, (unsigned long)shots_fired,
-                heading_deg, lab_bearing, altitude_m(), habitat_found ? 1 : 0,
-                state == ST_ATTACKED ? rescue_secs_left() : 0, ir_detect ? 1 : 0, calib_active ? 1 : 0);
+                altitude_m(), habitat_found ? 1 : 0,
+                state == ST_ATTACKED ? rescue_secs_left() : 0, (ir_ok && ir_detect) ? 1 : 0);
+}
+
+/* Scouting map for the dashboard: fog, located nests (never the hidden ones), drone. */
+static uint32_t t_scout_sent = 0;
+static void scout_send(void)
+{
+    char fog[17], nest[17];
+    for (int r = 0; r < 8; r++) {
+        snprintf(&fog[2 * r], 3, "%02X", scout_fog[r]);
+        snprintf(&nest[2 * r], 3, "%02X", scout_found[r]);
+    }
+    uart_printf("[SCOUT] FOG %s NEST %s POS %d %d FOUND %d %d SCAN %d\r\n",
+                fog, nest, scout_x, scout_y, scout_found_n, SCOUT_NESTS, scout_scanned());
+    scout_changed = false;
+    t_scout_sent = HAL_GetTick();
 }
 
 static void map_send(void)
@@ -1458,6 +1503,9 @@ static void dash_tick(void)
                        map_sent_x != aim_x || map_sent_y != aim_y;
         if (changed && elapsed(t_map, MAP_MIN_PERIOD_MS)) map_send();
     }
+    if (state == ST_STANDBY && scout_ready &&
+        ((scout_changed && elapsed(t_scout_sent, MAP_MIN_PERIOD_MS)) || elapsed(t_scout_sent, SCOUT_SEND_MS)))
+        scout_send();
 }
 
 static void matrix_render(void)
@@ -1483,10 +1531,13 @@ static void matrix_render(void)
     if (state == ST_STANDBY) {
         if (icon && (int32_t)(icon_until - now) > 0) { mx_show(icon); return; }
         icon = NULL;
-        if (calib_active) { mx_show(GL_ARROW[(now / 150U) % 8U]); return; }
-        int rel = turn_to_lab();
-        if (rel < 0) rel += 360;
-        mx_show(GL_ARROW[((rel + 22) % 360) / 45]);
+        /* Scouting map: fog lit, scanned cells dark, located nests blink 4 Hz,
+         * the drone blinks 1 Hz. */
+        bool nest_on = ((now / 125U) & 1U) != 0, drone_on = ((now / 500U) & 1U) != 0;
+        for (int r = 0; r < 8; r++)
+            rows[r] = nest_on ? (uint8_t)(scout_fog[r] | scout_found[r]) : (uint8_t)(scout_fog[r] & ~scout_found[r]);
+        if (drone_on) rset(rows, scout_x, scout_y); else rclr(rows, scout_x, scout_y);
+        mx_show(rows);
         return;
     }
 
@@ -1531,11 +1582,11 @@ static void led_set(bool on)
 static void send_stat(void)
 {
     int p = weapon_power();
-    uart_printf("[STAT] DRONE: #%d, MODE: %s, WAVE: %d, LASER: %d/10, WEAPON: %s %d/10, SHOTS: %lu, ZOMBIES DOWN: %lu, ALT: %+.1f m, HDG: %03d %s\r\n",
+    uart_printf("[STAT] DRONE: #%d, MODE: %s, WAVE: %d, LASER: %d/10, WEAPON: %s %d/10, SHOTS: %lu, ZOMBIES DOWN: %lu, ALT: %+.1f m, SCOUTED: %d/64, NESTS: %d/%d\r\n",
                 cfg.drone_id, mode_name(state), map_live ? wave_no : 0, laser_energy,
                 weapon_sel ? "SELECT" : "RULE", p,
                 (unsigned long)shots_fired, (unsigned long)zombies_down,
-                altitude_m(), heading_deg, cardinal(heading_deg));
+                altitude_m(), scout_scanned(), scout_found_n, SCOUT_NESTS);
     uart_printf("[STAT] IR: %s, HABITAT: %s, MUTE: %s, MOUNT: %s, DASH: %s, LED MATRIX: %s, 5-WAY: %s\r\n",
                 !ir_ok ? "missing" : (ir_detect ? "DETECT" : "CLEAR"), habitat_found ? "FOUND" : "SEARCHING",
                 cfg.muted ? "ON" : "OFF", cfg.mount_down ? "Z+ down" : "chip-up",
@@ -1555,6 +1606,7 @@ static void enter_standby(void)
     led_set(true);
     warn_mask = 0;
     map_live = false;                 /* map is wiped when leaving BATTLE */
+    scout_new();                      /* a new area to scout */
     cooldown_active = false;
     fire_anim = false;
     t_sensor = HAL_GetTick() - SENSOR_PERIOD_MS;
@@ -1749,17 +1801,12 @@ static void target_lock(void)
     uart_printf("[EVT] Target locked at (%d,%d)\r\n", aim_x, aim_y);
 }
 
-/* --- Lab registration: bearing + altitude zero (5-way centre hold / HOME) --- */
-static void lab_register(bool from_cmd)
+/* --- Altitude zero here (5-way centre hold / HOME) --- */
+static void altitude_rezero(bool from_cmd)
 {
-    compass_update(true);
-    lab_bearing = heading_deg;
     altitude_zero(BSP_PSENSOR_ReadPressure());
-    if (from_cmd)
-        uart_printf("[CMD] OK lab bearing %03d %s, altitude zero at %.2f hPa\r\n", lab_bearing, cardinal(lab_bearing), p0_hpa);
-    else
-        uart_printf("[EVT] Lab re-registered: bearing %03d deg %s, altitude zero at %.2f hPa\r\n",
-                    lab_bearing, cardinal(lab_bearing), p0_hpa);
+    if (from_cmd) uart_printf("[CMD] OK altitude zero at %.2f hPa\r\n", p0_hpa);
+    else          uart_printf("[EVT] Altitude zero reset at %.2f hPa\r\n", p0_hpa);
     bz_fx(SND(SND_MODE));
 }
 
@@ -1767,9 +1814,10 @@ static void lab_register(bool from_cmd)
 static void scout_report(void)
 {
     uint32_t s = (HAL_GetTick() - boot_tick) / 1000U;
-    uart_printf("[REPORT] Drone #%d: flight %02lu:%02lu, alt %+.1f m, hdg %03d %s, habitat found %lux, zombies down %lu, shots %lu\r\n",
+    uart_printf("[REPORT] Drone #%d: flight %02lu:%02lu, alt %+.1f m, area scanned %d/64, nests found %d/%d, "
+                "habitat found %lux, zombies down %lu, shots %lu\r\n",
                 cfg.drone_id, (unsigned long)(s / 60U), (unsigned long)(s % 60U), altitude_m(),
-                heading_deg, cardinal(heading_deg), (unsigned long)habitat_count,
+                scout_scanned(), scout_found_n, SCOUT_NESTS, (unsigned long)habitat_count,
                 (unsigned long)zombies_down, (unsigned long)shots_fired);
     bz_fx(SND(SND_REPORT));
 }
@@ -1778,7 +1826,7 @@ static void scout_report(void)
 static void action_single(void)
 {
     switch (state) {
-    case ST_STANDBY: if (!calib_active) scout_report(); break;
+    case ST_STANDBY: scout_report(); break;
     case ST_BATTLE:  laser_charge(); break;
     default: break;                         /* ignored while attacked (spec) */
     }
@@ -1787,7 +1835,7 @@ static void action_single(void)
 static void action_double(void)
 {
     switch (state) {
-    case ST_STANDBY:  if (!calib_active) enter_battle(false); break;
+    case ST_STANDBY:  enter_battle(false); break;
     case ST_BATTLE:   bz_fx(SND(SND_MODE)); enter_standby(); break;
     case ST_ATTACKED: rescue(); break;
     default: break;
@@ -1833,11 +1881,10 @@ static void ir_tick(void)
 /* --- 5-way switch --- */
 static void fiveway_dir(int idx)
 {
-    if (state != ST_BATTLE) return;                  /* directions only aim */
-    if (idx == FIVEWAY_IDX_UP)    aim_move(0, -1);
-    if (idx == FIVEWAY_IDX_DOWN)  aim_move(0, +1);
-    if (idx == FIVEWAY_IDX_LEFT)  aim_move(-1, 0);
-    if (idx == FIVEWAY_IDX_RIGHT) aim_move(+1, 0);
+    int dx = idx == FIVEWAY_IDX_LEFT ? -1 : (idx == FIVEWAY_IDX_RIGHT ? 1 : 0);
+    int dy = idx == FIVEWAY_IDX_UP   ? -1 : (idx == FIVEWAY_IDX_DOWN  ? 1 : 0);
+    if (state == ST_STANDBY)     scout_move(dx, dy);  /* fly the scout drone */
+    else if (state == ST_BATTLE) aim_move(dx, dy);    /* move the crosshair  */
 }
 
 static void fiveway_center_short(void)
@@ -1847,7 +1894,7 @@ static void fiveway_center_short(void)
 
 static void fiveway_center_hold(void)
 {
-    if (state == ST_STANDBY && !calib_active) lab_register(false);
+    if (state == ST_STANDBY) altitude_rezero(false);
     else if (state == ST_BATTLE) weapon_next();
 }
 
@@ -1917,19 +1964,6 @@ static void habitat_check(void)
 
 static void standby_tick(void)
 {
-    if (calib_active) {
-        compass_update(true);
-        if (elapsed(calib_t0, CALIB_MS)) {
-            calib_active = false;
-            mag_off_x = (cal_max_x + cal_min_x) / 2.0f;
-            mag_off_y = (cal_max_y + cal_min_y) / 2.0f;
-            uart_printf("[EVT] Compass calibrated: offset X %.0f mG, Y %.0f mG. Type HOME to re-register the lab bearing\r\n",
-                        mag_off_x, mag_off_y);
-        }
-    } else {
-        compass_update(false);
-    }
-
     if (elapsed(t_sensor, SENSOR_PERIOD_MS)) {
         t_sensor += SENSOR_PERIOD_MS;
         if (elapsed(t_sensor, SENSOR_PERIOD_MS)) t_sensor = HAL_GetTick();
@@ -1963,7 +1997,6 @@ static void battle_tick(void)
         if (elapsed(t_led, LED_BATTLE_TOGGLE_MS)) t_led = HAL_GetTick();
         led_set(!led_on);
     }
-    compass_update(false);                               /* dashboard heading */
 
     /* Waves: cleared map -> AREA CLEARED, short pause, next (bigger, faster) wave */
     if (map_live && wave_active && map_count() == 0) {
@@ -2132,8 +2165,8 @@ static void cmd_help(void)
     uart_write("[CMD] Commands:\r\n"
                "[CMD]   HELP | STATUS | THRESH | SET <T|P|H|A|G|M>_<LOW|HIGH> <v> | DASH ON|OFF\r\n"
                "[CMD]   MODE STANDBY|BATTLE | CHARGE | RESCUE\r\n"
-               "[CMD]   battle:  AIM <dx> <dy> | LOCK | POWER RULE|1..5|NEXT\r\n"
-               "[CMD]   standby: HOME | CALIB | BLACKBOX | ID <1..9> | MOUNT CHIPUP|ZDOWN | MUTE ON|OFF | ROLE DRONE|CONTROLLER\r\n"
+               "[CMD]   battle:  AIM <dx> <dy> (crosshair) | LOCK | POWER RULE|1..5|NEXT\r\n"
+               "[CMD]   standby: AIM <dx> <dy> (fly the scout) | HOME | BLACKBOX | ID <1..9> | MOUNT CHIPUP|ZDOWN | MUTE ON|OFF | ROLE DRONE|CONTROLLER\r\n"
 #if ENABLE_DEV_TOOLS
                "[CMD]   dev: I2CSCAN | I2CDUMP <addr> <cmd> <n> | I2CSPEED 100|50|25 | FIVEWAY | INPUTS | MAG\r\n"
 #endif
@@ -2312,11 +2345,12 @@ static void cmd_exec(char *line)
 
     /* --- Battle: aiming and weapon (5-way or pilot controller) --- */
     if (!strcmp(verb, "AIM")) {
-        if (state != ST_BATTLE) { cmd_not_allowed(); return; }
+        if (state != ST_BATTLE && state != ST_STANDBY) { cmd_not_allowed(); return; }
         if (!arg1 || !arg2) { uart_write("[CMD] ERR usage: AIM <dx> <dy>\r\n"); return; }
         int dx = atoi(arg1), dy = atoi(arg2);
         dx = dx > 0 ? 1 : (dx < 0 ? -1 : 0);
         dy = dy > 0 ? 1 : (dy < 0 ? -1 : 0);
+        if (state == ST_STANDBY) { scout_move(dx, dy); return; }
         aim_manual = true;
         aim_move(dx, dy);
         return;                                          /* silent: may repeat fast */
@@ -2346,7 +2380,7 @@ static void cmd_exec(char *line)
 
     /* --- Standby only: configuration (saved to flash) and tools --- */
     bool is_cfg = !strcmp(verb, "MUTE") || !strcmp(verb, "ID") || !strcmp(verb, "MOUNT") || !strcmp(verb, "ROLE");
-    bool is_sb  = is_cfg || !strcmp(verb, "HOME") || !strcmp(verb, "CALIB") || !strcmp(verb, "BLACKBOX");
+    bool is_sb  = is_cfg || !strcmp(verb, "HOME") || !strcmp(verb, "BLACKBOX");
     if (is_sb && state != ST_STANDBY) { cmd_not_allowed(); return; }
 
     if (!strcmp(verb, "MUTE")) {
@@ -2383,15 +2417,7 @@ static void cmd_exec(char *line)
         NVIC_SystemReset();
         return;
     }
-    if (!strcmp(verb, "HOME")) { lab_register(true); return; }
-    if (!strcmp(verb, "CALIB")) {
-        calib_active = true;
-        calib_t0 = HAL_GetTick();
-        cal_min_x = cal_min_y = 1e9f;
-        cal_max_x = cal_max_y = -1e9f;
-        uart_write("[CMD] OK calibrating for 10 s: rotate the drone flat, 1-2 full turns\r\n");
-        return;
-    }
+    if (!strcmp(verb, "HOME")) { altitude_rezero(true); return; }
     if (!strcmp(verb, "BLACKBOX")) {
         if (bb_flash_valid) bb_print(bb_flash_image(), "Recovered from flash (drone self-destructed)");
         else                bb_print(&bb, "Last sortie (RAM)");
@@ -2418,14 +2444,11 @@ static void cmd_exec(char *line)
         else uart_printf("[CMD] 5-way not working (%s)\r\n", fiveway_acked ? "address ACKs, ID read fails" : "no answer at 0x03..0x08");
         return;
     }
-    if (!strcmp(verb, "MAG")) {                          /* compass debugging */
+    if (!strcmp(verb, "MAG")) {                          /* magnetometer debugging */
         int16_t m[3] = {0};
         BSP_MAGNETO_GetXYZ(m);
-        compass_update(true);
-        uart_printf("[CMD] MAG raw X %.1f Y %.1f Z %.1f uT (|M| %.1f) | offset X %.1f Y %.1f uT | heading %03d %s, lab %03d, turn %+d\r\n",
-                    m[0] / 10.0f, m[1] / 10.0f, m[2] / 10.0f,
-                    sqrtf((float)m[0] * m[0] + (float)m[1] * m[1] + (float)m[2] * m[2]) / 10.0f,
-                    mag_off_x / 10.0f, mag_off_y / 10.0f, heading_deg, cardinal(heading_deg), lab_bearing, turn_to_lab());
+        uart_printf("[CMD] MAG X %.1f Y %.1f Z %.1f uT, |M| %.1f uT\r\n", m[0] / 10.0f, m[1] / 10.0f, m[2] / 10.0f,
+                    sqrtf((float)m[0] * m[0] + (float)m[1] * m[1] + (float)m[2] * m[2]) / 10.0f);
         return;
     }
     if (!strcmp(verb, "INPUTS")) {
@@ -2574,16 +2597,23 @@ static void app_init(void)
     altitude_zero(p0);
     uart_printf("[EVT] Altitude zero at %.2f hPa\r\n", p0);
 
-    /* Lab bearing = heading at registration (power-on) */
-    for (int i = 0; i < 5; i++) compass_update(true);
-    lab_bearing = heading_deg;
-    uart_printf("[EVT] Lab bearing registered: %03d deg %s\r\n", lab_bearing, cardinal(lab_bearing));
-
     bb_clear();
     bb_flash_check();
     if (bb_flash_valid) {
         const bb_image_t *f = bb_flash_image();
         uart_printf("[EVT] Black box of Drone #%d recovered (%d records). Type BLACKBOX to read\r\n", f->drone_id, f->count);
+    }
+
+    /* Seed the map generator from sensor noise so every power-on is a new area. */
+    {
+        int16_t a[3] = {0}, m[3] = {0};
+        BSP_ACCELERO_AccGetXYZ(a);
+        BSP_MAGNETO_GetXYZ(m);
+        float pr = BSP_PSENSOR_ReadPressure(), t = BSP_TSENSOR_ReadTemp();
+        uint32_t pb, tb;
+        memcpy(&pb, &pr, 4); memcpy(&tb, &t, 4);
+        rng_state ^= pb * 2654435761u ^ tb ^ ((uint32_t)(uint16_t)a[0] << 16) ^ (uint16_t)m[1] ^ ((uint32_t)(uint16_t)a[2] << 7);
+        if (rng_state == 0) rng_state = 0x2028EE28u;
     }
 
     bz_fx(SND(SND_BOOT));

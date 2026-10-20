@@ -115,7 +115,8 @@ class FakeDrone:
         self.e, self.sel, self.p, self.cd_until = 0, False, 1, 0.0
         self.map, self.ax, self.ay, self.wave = [0] * 8, 3, 3, 0
         self.down = self.shots = 0
-        self.hdg, self.lab, self.alt = 120.0, 80, 0.0
+        self.alt = 0.0
+        self._scout_new()
         self.t_attack = 0.0
         self.s = {"T": 26.0, "P": 1008.5, "H": 58.0, "A": 9.81, "G": 1.2, "M": 42.0}
 
@@ -141,7 +142,6 @@ class FakeDrone:
             time.sleep(0.05)
             now = time.time()
             with self.lock:
-                self.hdg = (self.hdg + random.uniform(-2, 2)) % 360
                 if self.mode == "STANDBY" and now - t_tlm >= 1:
                     t_tlm = now
                     for k, step in (("T", .05), ("P", .02), ("H", .3), ("A", .05), ("G", .3), ("M", .4)):
@@ -185,8 +185,34 @@ class FakeDrone:
         hab = 1 if 20 <= self.s["T"] <= 32 and 40 <= self.s["H"] <= 70 else 0
         self.out(f"[HUD] ID 3 MODE {self.mode} E {self.e} P {self.p if self.sel else 5} SEL {int(self.sel)} "
                  f"CD {cd:.1f} WAVE {self.wave} TGT {self._cells() if self.wave else 0} DOWN {self.down} "
-                 f"SHOTS {self.shots} HDG {int(self.hdg)} LAB {self.lab} ALT {self.alt:.1f} HAB {hab} "
-                 f"RESC {resc} IR 0 CAL 0")
+                 f"SHOTS {self.shots} ALT {self.alt:.1f} HAB {hab} RESC {resc} IR 0")
+        if self.mode == "STANDBY":
+            self._scout_send()
+
+    def _scout_new(self):
+        self.fog, self.found = [0xFF] * 8, [0] * 8
+        self.nests = [0] * 8
+        while sum(bin(r).count("1") for r in self.nests) < 3:
+            self.nests[random.randrange(6)] |= 0x80 >> random.randrange(8)
+        self.sx, self.sy = 3, 7
+        self._scan()
+
+    def _scan(self):
+        for dy in (-1, 0, 1):
+            for dx in (-1, 0, 1):
+                x, y = self.sx + dx, self.sy + dy
+                if 0 <= x < 8 and 0 <= y < 8:
+                    self.fog[y] &= ~(0x80 >> x) & 0xFF
+                    if self.nests[y] & (0x80 >> x) and not self.found[y] & (0x80 >> x):
+                        self.found[y] |= 0x80 >> x
+                        n = sum(bin(r).count("1") for r in self.found)
+                        self.out(f"[EVT] Scouting: nest found at ({x},{y}) ({n}/3)")
+
+    def _scout_send(self):
+        n = sum(bin(r).count("1") for r in self.found)
+        scan = 64 - sum(bin(r).count("1") for r in self.fog)
+        self.out("[SCOUT] FOG " + "".join(f"{r:02X}" for r in self.fog) + " NEST " +
+                 "".join(f"{r:02X}" for r in self.found) + f" POS {self.sx} {self.sy} FOUND {n} 3 SCAN {scan}")
 
     def _map(self):
         if self.dash:
@@ -194,6 +220,18 @@ class FakeDrone:
 
     def _wave(self, n):
         self.wave, self.map = n, [0] * 8
+        if n == 1:                               # scouted nests are bigger (plus of 5)
+            for y in range(8):
+                for x in range(8):
+                    if self.nests[y] & (0x80 >> x):
+                        cells = [(x, y)] + ([(x + 1, y), (x - 1, y), (x, y + 1), (x, y - 1)]
+                                            if self.found[y] & (0x80 >> x) else [])
+                        for cx, cy in cells:
+                            if 0 <= cx < 8 and 0 <= cy < 8:
+                                self.map[cy] |= 0x80 >> cx
+            self.out("[EVT] Wave 1 incoming: 3 outbreaks")
+            self._map()
+            return
         for _ in range(2 + n):
             self.map[random.randrange(5)] |= 0x80 >> random.randrange(8)
         self.out(f"[EVT] Wave {n} incoming: {2 + n} outbreaks")
@@ -241,8 +279,14 @@ class FakeDrone:
                 self.mode, self.ax, self.ay = "BATTLE", 3, 3
                 self.out("Entering BATTLE MODE")
                 self._wave(1)
+            elif c == "AIM" and self.mode == "STANDBY" and len(a) == 2:
+                sgn = lambda v: (int(v) > 0) - (int(v) < 0)
+                self.sx = min(7, max(0, self.sx + sgn(a[0])))
+                self.sy = min(7, max(0, self.sy + sgn(a[1])))
+                self._scan()
             elif c == "MODE" and a == ["STANDBY"] and self.mode == "BATTLE":
                 self.mode, self.wave, self.map = "STANDBY", 0, [0] * 8
+                self._scout_new()
                 self.out("Entering STANDBY MODE")
             elif c == "CHARGE" and self.mode == "BATTLE":
                 b = self.e
@@ -301,6 +345,8 @@ class DroneModel:
         self.warn_t = {}
         self.hist = {k: collections.deque(maxlen=60) for k, _, _ in SENSORS}
         self.rows, self.aim = [0] * 8, (3, 3)
+        self.fog, self.nests, self.scout = [0xFF] * 8, [0] * 8, (3, 7)
+        self.found, self.total, self.scanned = 0, 3, 0
         self.rescue_left = 10
         self.last_rx = 0.0
         self.lost = False
@@ -317,6 +363,19 @@ class DroneModel:
                 self.id = int(self.hud["ID"])
             if self.mode == "ATTACKED":
                 self.rescue_left = int(self.hud.get("RESC", self.rescue_left))
+            return None
+        if line.startswith("[SCOUT]"):
+            t = line.split()
+            try:
+                k = {t[i]: i for i in range(1, len(t))}
+                fog, nest = t[k["FOG"] + 1], t[k["NEST"] + 1]
+                self.fog = [int(fog[i:i + 2], 16) for i in range(0, 16, 2)]
+                self.nests = [int(nest[i:i + 2], 16) for i in range(0, 16, 2)]
+                self.scout = (int(t[k["POS"] + 1]), int(t[k["POS"] + 2]))
+                self.found, self.total = int(t[k["FOUND"] + 1]), int(t[k["FOUND"] + 2])
+                self.scanned = int(t[k["SCAN"] + 1])
+            except (KeyError, IndexError, ValueError):
+                pass
             return None
         if line.startswith("[MAP]"):
             t = line.split()
@@ -529,15 +588,21 @@ class Dashboard:
         for r in range(3):
             grid.rowconfigure(r, weight=1)
 
-        self._label(nav, "NAVIGATION", 10, True, fg=DIM).pack(anchor="w", padx=12, pady=(10, 0))
-        self.compass = tk.Canvas(nav, width=240, height=240, bg=PANEL, highlightthickness=0)
-        self.compass.pack(pady=6)
+        self._label(nav, "SCOUTING MAP", 10, True, fg=DIM).pack(anchor="w", padx=12, pady=(10, 0))
+        self.SC = 30
+        self.scout_cv = tk.Canvas(nav, width=8 * self.SC + 2, height=8 * self.SC + 2, bg=PANEL, highlightthickness=0)
+        self.scout_cv.pack(pady=6)
+        self.scout_rects = [[self.scout_cv.create_rectangle(1 + x * self.SC + 2, 1 + y * self.SC + 2,
+                                                            1 + (x + 1) * self.SC - 2, 1 + (y + 1) * self.SC - 2,
+                                                            fill="#3a424c", outline="")
+                             for x in range(8)] for y in range(8)]
+        self._label(nav, "grey fog   dark scanned   red nest   blue drone", 8, fg=DIM).pack()
         self.nav_txt = self._label(nav, "", 11, justify="left")
-        self.nav_txt.pack(anchor="w", padx=14)
-        self._label(nav, "SCOUTING", 10, True, fg=DIM).pack(anchor="w", padx=12, pady=(16, 0))
+        self.nav_txt.pack(anchor="w", padx=14, pady=(8, 0))
         self.scout_txt = self._label(nav, "", 11, justify="left")
-        self.scout_txt.pack(anchor="w", padx=14)
-        self._label(nav, "Single press: scout report\nDouble press: BATTLE\n5-way centre 1 s: re-register lab",
+        self.scout_txt.pack(anchor="w", padx=14, pady=(6, 0))
+        self._label(nav, "5-way / tilt / arrow keys: fly the scout\nSingle press: scout report   Double: BATTLE\n"
+                         "5-way centre 1 s: altitude zero",
                     9, fg=DIM, justify="left").pack(side="bottom", anchor="w", padx=14, pady=10)
 
     def _build_battle(self, f):
@@ -697,7 +762,9 @@ class Dashboard:
     def _hotkey(self, cmd):
         if self.root.focus_get() is self.cmd:
             return
-        if cmd.startswith(("AIM", "LOCK", "POWER", "CHARGE")) and self.model.mode != "BATTLE":
+        if cmd.startswith("AIM") and self.model.mode not in ("BATTLE", "STANDBY"):
+            return
+        if cmd.startswith(("LOCK", "POWER", "CHARGE")) and self.model.mode != "BATTLE":
             return
         if cmd == "RESCUE" and self.model.mode != "ATTACKED":
             return
@@ -758,7 +825,7 @@ class Dashboard:
             self.ctl_last = now
         mode = self.model.mode
         t = line.split()
-        if line.startswith("[CTL] TILT") and len(t) == 4 and mode == "BATTLE":
+        if line.startswith("[CTL] TILT") and len(t) == 4 and mode in ("BATTLE", "STANDBY"):
             self.send(f"AIM {t[2]} {t[3]}")
         elif line == "[CTL] BTN SINGLE" and mode == "BATTLE":
             self.send("LOCK")
@@ -850,12 +917,10 @@ class Dashboard:
             val.configure(text="--" if v is None else f"{v:.2f}", fg="#ff6b6b" if bad else FG)
             frame.configure(highlightbackground="#c62828" if bad else PANEL)
             self._spark(cv, list(m.hist[tag]), "#ff6b6b" if bad else "#8ab4f8")
-        hdg, lab = m.h("HDG"), m.h("LAB")
-        turn = (lab - hdg + 540) % 360 - 180
-        self._draw_compass(hdg, lab)
-        cal = "   (calibrating)" if m.h("CAL") else ""
-        self.nav_txt.configure(text=f"Heading     {hdg:03.0f} deg{cal}\nLab bearing {lab:03.0f} deg\n"
-                                    f"Turn        {turn:+.0f} deg\nAltitude    {m.h('ALT'):+.1f} m")
+        self._draw_scout()
+        done = "   ALL FOUND" if m.found >= m.total else ""
+        self.nav_txt.configure(text=f"Nests found {m.found}/{m.total}{done}\nScanned     {m.scanned}/64\n"
+                                    f"Altitude    {m.h('ALT'):+.1f} m")
         hab = "FOUND" if m.h("HAB") else "searching (20-32 C, 40-70 %RH)"
         ir = "OBSTACLE AHEAD" if m.h("IR") else "clear"
         self.scout_txt.configure(text=f"Habitat   {hab}\nIR        {ir}\n"
@@ -874,25 +939,21 @@ class Dashboard:
             pts += [i * (w - 2) / 59 + 1, h - 3 - (v - lo) / (hi - lo) * (h - 6)]
         cv.create_line(*pts, fill=color, width=2)
 
-    def _draw_compass(self, hdg, lab):
-        c = self.compass
-        c.delete("all")
-        cx = cy = 120
-        r = 100
-        c.create_oval(cx - r, cy - r, cx + r, cy + r, outline="#3c4652", width=2)
-        for deg, name in ((0, "N"), (90, "E"), (180, "S"), (270, "W")):
-            a = math.radians(deg)
-            c.create_text(cx + (r - 14) * math.sin(a), cy - (r - 14) * math.cos(a), text=name, fill=DIM,
-                          font=("Segoe UI", 11, "bold"))
-        a = math.radians(lab)
-        c.create_oval(cx + r * math.sin(a) - 9, cy - r * math.cos(a) - 9, cx + r * math.sin(a) + 9,
-                      cy - r * math.cos(a) + 9, fill="#81c995", outline="")
-        c.create_text(cx + (r + 0) * math.sin(a), cy - (r + 0) * math.cos(a), text="L", fill="#0b2a12",
-                      font=("Segoe UI", 9, "bold"))
-        a = math.radians(hdg)
-        c.create_line(cx, cy, cx + (r - 26) * math.sin(a), cy - (r - 26) * math.cos(a), fill="#ff6b6b",
-                      width=5, arrow="last", arrowshape=(16, 18, 6))
-        c.create_oval(cx - 6, cy - 6, cx + 6, cy + 6, fill=FG, outline="")
+    def _draw_scout(self):
+        m = self.model
+        sx, sy = m.scout
+        for y in range(8):
+            for x in range(8):
+                bit = 0x80 >> x
+                if (x, y) == (sx, sy):
+                    col = "#8ab4f8"
+                elif m.nests[y] & bit:
+                    col = "#e53935" if self.blink else "#8e2420"
+                elif m.fog[y] & bit:
+                    col = "#3a424c"
+                else:
+                    col = "#151a20"
+                self.scout_cv.itemconfigure(self.scout_rects[y][x], fill=col)
 
     def _draw_battle(self):
         m = self.model

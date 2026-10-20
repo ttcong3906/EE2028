@@ -170,7 +170,7 @@ int main(void)
     CHECK(strstr(out, "=== Drone #3 online === mount: chip-up, silent: OFF") != NULL, "boot banner");
     CHECK(strstr(out, "[EVT] System check: sensors OK, LED matrix OK, 5-way OK, IR NOT FOUND") != NULL, "system check: empty A0 -> IR NOT FOUND");
     CHECK(fiveway_addr == 0x03, "5-way detected by device ID");
-    CHECK(strstr(out, "[EVT] Altitude zero at 1008.00 hPa") && strstr(out, "[EVT] Lab bearing registered:"), "altitude zero + lab bearing at boot");
+    CHECK(strstr(out, "[EVT] Altitude zero at 1008.00 hPa") && !strstr(out, "Lab bearing"), "altitude zero at boot (no compass)");
     CHECK(strstr(out, "Entering STANDBY MODE") != NULL, "Entering STANDBY MODE");
     run_ms(5);
     CHECK(memcmp(mx_shown, GL_DIGIT[3], 8) == 0, "matrix shows drone number 3 at boot");
@@ -196,12 +196,45 @@ int main(void)
     CHECK(strstr(out, "Obstacle") == NULL, "IR event cooldown 3 s");
     clear_out(); single();
     CHECK(strstr(out, "[REPORT] Drone #3: flight") && strstr(out, "habitat found 2x, zombies down 0, shots 0"), "single press -> scout report (habitat found again after the humid spell)");
-    clear_out(); fw_tap(FIVEWAY_IDX_CENTER); fw_tap(FIVEWAY_IDX_UP);
-    CHECK(strstr(out, "[EVT]") == NULL, "5-way short presses do nothing in STANDBY");
+    clear_out(); fw_tap(FIVEWAY_IDX_CENTER);
+    CHECK(strstr(out, "[EVT]") == NULL, "5-way centre short press does nothing in STANDBY");
     clear_out(); s_press = 1007.5f; fw_hold(FIVEWAY_IDX_CENTER, 1100);
-    CHECK(strstr(out, "[EVT] Lab re-registered: bearing") && strstr(out, "altitude zero at 1007.50 hPa"), "5-way centre held 1 s -> lab re-registered");
-    CHECK(count("Lab re-registered") == 1, "hold action fires once");
+    CHECK(strstr(out, "[EVT] Altitude zero reset at 1007.50 hPa") != NULL, "5-way centre held 1 s -> altitude zero");
+    CHECK(count("Altitude zero reset") == 1, "hold action fires once");
     s_press = 1008.0f; altitude_zero(1008.0f);
+
+    printf("== scouting map ==\n");
+    scout_new();
+    CHECK(popcount8(scout_nest) == SCOUT_NESTS && scout_found_n == 0 && scout_scanned() == 6, "new area: 3 hidden nests, only the 3x3 around the start scanned");
+    memset(scout_nest, 0, 8); memset(scout_found, 0, 8); memset(scout_fog, 0xFF, 8);
+    rset(scout_nest, 3, 4); rset(scout_nest, 6, 1); rset(scout_nest, 0, 0);
+    scout_x = 3; scout_y = 7; scout_found_n = 0; scout_scan(false);
+    clear_out(); fw_tap(FIVEWAY_IDX_UP);
+    CHECK(scout_y == 6 && strstr(out, "nest found") == NULL, "5-way up: scout moves 1 cell");
+    fw_tap(FIVEWAY_IDX_UP);
+    CHECK(strstr(out, "[EVT] Scouting: nest found at (3,4) (1/3)") && scout_found_n == 1, "3x3 scan finds the nest next to the drone");
+    CHECK(!rbit(scout_fog, 2, 4) && !rbit(scout_fog, 4, 6) && rbit(scout_fog, 3, 3), "fog cleared only around the path");
+    ir_detect = true; clear_out(); type("AIM 0 -1\r");
+    CHECK(scout_y == 5 && strstr(out, "[EVT] Obstacle at close range, holding position"), "IR obstacle blocks the scout");
+    ir_detect = false;
+    for (int i = 0; i < 3; i++) type("AIM 1 0\r");
+    for (int i = 0; i < 3; i++) type("AIM 0 -1\r");
+    CHECK(scout_x == 6 && scout_y == 2 && strstr(out, "nest found at (6,1) (2/3)"), "AIM (controller / dashboard) flies the scout too");
+    run_ms(130);
+    {
+        uint32_t now = HAL_GetTick();
+        bool drone_lit = (mx_shown[2] & (0x80u >> 6)) != 0, fog_lit = (mx_shown[0] & (0x80u >> 7)) != 0;
+        CHECK(drone_lit == (((now / 500U) & 1U) != 0) && fog_lit && !(mx_shown[6] & (0x80u >> 3)),
+              "matrix: fog lit, scanned dark, drone blinking");
+    }
+    clear_out(); single();
+    CHECK(strstr(out, "area scanned") && strstr(out, "nests found 2/3"), "scout report shows scanned area and nests");
+    wave_start(1); service_isrs();
+    if (getenv("DBG")) printf("cells %d: %s\n", map_count(), last("[EVT] Wave"));
+    CHECK(map_count() == 11 && strstr(out, "[EVT] Wave 1 incoming: 3 outbreaks (2 scouted nests, bigger)"), "wave 1: scouted nests = plus of 5, unknown nest = 1 cell");
+    CHECK(cell(3, 3) && cell(3, 5) && cell(2, 4) && cell(4, 4) && cell(0, 0) && !cell(1, 0), "cluster shapes in the battle map");
+    map_live = false; memset(map_rows, 0, 8);
+    scout_new();                                       /* back to a fresh area for the tests below */
 
     printf("== I2C robustness ==\n");
     clear_out(); sim_stuck_next_read = 1; run_ms(100);
@@ -238,7 +271,8 @@ int main(void)
     printf("== dashboard lines ==\n");
     clear_out(); type("DASH ON\r"); run_ms(600);
     CHECK(strstr(out, "[CMD] OK DASH ON") && count("[HUD]") >= 2, "DASH ON -> [HUD] every 250 ms");
-    CHECK(strstr(out, "[HUD] ID 3 MODE STANDBY E 0 P 5 SEL 0 CD 0.0 WAVE 0 TGT 0 DOWN 0 SHOTS 0 HDG ") != NULL, "HUD format in STANDBY");
+    CHECK(strstr(out, "[HUD] ID 3 MODE STANDBY E 0 P 5 SEL 0 CD 0.0 WAVE 0 TGT 0 DOWN 0 SHOTS 0 ALT ") != NULL, "HUD format in STANDBY");
+    CHECK(strstr(out, "[SCOUT] FOG ") && strstr(out, " POS 3 7 FOUND 0 3 SCAN 6"), "[SCOUT] line in STANDBY (fog, located nests, drone)");
     if (getenv("DBG")) printf("%s\n", last("[HUD]"));
     CHECK(strstr(out, "[MAP]") == NULL, "no [MAP] in STANDBY");
 
