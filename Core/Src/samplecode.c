@@ -3,30 +3,25 @@
  * @brief   EE2028 Assignment 2 (AY26/27 S1) - "The Last of EE2028"
  *          Firmware for an autonomous attacking drone on the B-L4S5I-IOT01A.
  *
- * Full behaviour: docs/SPEC.md (v3.2). One file, two roles (ROLE command,
+ * Full behaviour: docs/SPEC.md (v3.3). One file, two roles (ROLE command,
  * saved in flash, default DRONE):
  *
- *   DRONE       the assignment + 4 Grove modules
+ *   DRONE       the assignment + 4 Grove modules (LED matrix, OLED, buzzer, 5-way)
  *     STANDBY   scouting: 6-sensor telemetry (spec), scouting map on the LED
- *               matrix (fly with the 5-way, find hidden nests under the fog),
- *               human-habitat finder (T + H), obstacle blocks the scout (IR)
- *     BATTLE    LED matrix = spreading infection map, 5-way switch = aiming,
- *               laser charge/auto-fire (spec), selectable weapon power,
- *               zombie at close range (IR)
- *     ATTACKED  "The Last of EE2028" (spec) + Morse SOS on buzzer and matrix
+ *               matrix (fly with the 5-way or the controller, find hidden
+ *               nests under the fog), human-habitat finder (T + H), OLED pages
+ *     BATTLE    LED matrix = spreading infection map (scouted nests are
+ *               bigger), aiming, laser charge/auto-fire (spec), weapon power
+ *     ATTACKED  "The Last of EE2028" (spec) + Morse SOS, OLED countdown
  *     TERMINATED black box saved to flash, comms cut (spec), MCU Standby
  *
- *   CONTROLLER  board 2 as the pilot's handheld controller (no modules):
- *               tilt = aim, single = lock target, double = weapon power /
- *               rescue team. The laptop dashboard relays it to the drone as
- *               ordinary UART commands.
+ *   CONTROLLER  board 2 as the pilot's handheld controller (no modules),
+ *               wired to the drone on UART4: tilt = fly / aim, single = lock
+ *               target, double = weapon power / rescue team.
  *
- * Grove shield wiring (drone):
- *   A0 IR reflective (PC5, digital)   D6 buzzer (PB1, TIM3_CH4 PWM)
- *   I2C: LED matrix 0x70, 5-way switch 0x03
- *
- * The laptop dashboard (tools/dashboard.py) replaces an on-board display:
- * after "DASH ON" the drone also sends [HUD] and [MAP] lines.
+ * Wiring (drone, Grove Base Shield):
+ *   D6 buzzer (PB1, TIM3_CH4 PWM)    UART port: controller (PA0 TX, PA1 RX)
+ *   I2C: LED matrix 0x70, OLED 0x3C, 5-way switch 0x03
  *
  * Design rules:
  *   - Super-loop, fully non-blocking, all timing from HAL_GetTick().
@@ -68,7 +63,8 @@ extern uint8_t SENSOR_IO_Read(uint8_t Addr, uint8_t Reg);
 /* --- Feature switches --- */
 #define ENABLE_MATRIX           1
 #define ENABLE_BUZZER           1
-#define ENABLE_IR               1
+#define ENABLE_OLED             1      /* Grove OLED 128x64 (SSD1306/SSD1315) */
+#define ENABLE_LINK             1      /* wired pilot controller on UART4 */
 #define ENABLE_FIVEWAY          1      /* Grove 5-way switch (I2C)          */
 #define ENABLE_FLASH            1      /* black box + config in flash       */
 #define ENABLE_DEV_TOOLS        1      /* I2CSCAN/I2CDUMP/INPUTS: set 0 before submission */
@@ -80,7 +76,8 @@ extern uint8_t SENSOR_IO_Read(uint8_t Addr, uint8_t Reg);
 /* --- External module quirks (change if the picture looks wrong) --- */
 #define MATRIX_I2C_ADDR         0x70
 #define MATRIX_FLIP_X           0      /* 1 if letters/arrows are mirrored  */
-#define IR_DETECT_LEVEL         GPIO_PIN_RESET  /* pin level when object close */
+#define OLED_I2C_ADDR           0x3C
+#define OLED_COL_OFFSET         0      /* 2 for SH1106-based 1.3" modules   */
 
 /* --- Seeed Grove multi-switch (5-way tactile) --- */
 #define MS_CMD_GET_DEV_ID       0x00
@@ -119,27 +116,24 @@ extern uint8_t SENSOR_IO_Read(uint8_t Addr, uint8_t Reg);
 #define I2C_TIMEOUT_MS          25U    /* Grove I2C transfers (5-way may stretch the clock) */
 #define MODULE_BOOT_MS          300U   /* let the 5-way's own MCU start before probing */
 #define MODULE_REPROBE_MS       2000U  /* STANDBY: look again for unplugged modules */
-#define IR_POLL_MS              20U
-#define IR_STABLE_SAMPLES       3U
-#define IR_EVENT_COOLDOWN_MS    3000U
 #define HABITAT_HOLD_S          3
 #define WAVE_PAUSE_MS           2000U  /* AREA CLEARED -> next wave            */
 #define WAVE_SPREAD_START_MS    3000U  /* wave 1 spreads 1 cell per 3 s        */
 #define WAVE_SPREAD_STEP_MS     250U   /* each wave spreads 0.25 s faster      */
 #define WAVE_SPREAD_MIN_MS      1000U
 #define WAVE_MAX_SEEDS          12
-#define CLOSE_BLINK_MS          2000U
 #define CROSSHAIR_BLINK_MS      125U   /* 4 Hz */
 #define ICON_MS                 1000U
 #define HOUSE_ICON_MS           2000U
 #define SCOUT_NESTS             3      /* hidden nests per area = wave 1 outbreaks */
-#define SCOUT_BLOCK_MSG_MS      1000U  /* IR blocking message at most 1/s */
-#define SCOUT_SEND_MS           1000U  /* dashboard [SCOUT] refresh */
 #define BOOT_ID_MS              1000U
 #define BEAM_FRAME_MS           50U
 #define BLAST_FLASH_MS          150U
-#define HUD_PERIOD_MS           250U   /* dashboard state line                 */
-#define MAP_MIN_PERIOD_MS       200U   /* dashboard map line, at most 5/s      */
+#define BOOT_CHECK_MS           2500U  /* OLED system-check page at power-on    */
+#define EVENT_TEXT_MS           2000U  /* OLED event line                      */
+#define OLED_REFRESH_MS         100U
+#define LINK_PERIOD_MS          250U   /* drone -> controller: LINK <mode>     */
+#define LINK_TIMEOUT_MS         3000U  /* no ALIVE for 3 s: controller lost    */
 #define CTL_TILT_POLL_MS        50U
 #define CTL_TILT_REPEAT_MS      150U
 #define CTL_ALIVE_MS            1000U
@@ -203,8 +197,8 @@ static uint32_t    boot_tick = 0;
 
 static uint32_t t_sensor = 0, t_led = 0, t_flip_poll = 0, t_attack_start = 0, t_attack_msg = 0;
 static bool     led_on = false;
-static bool     dash_on = false;         /* UART DASH command: [HUD]/[MAP] lines */
 static uint32_t warn_mask = 0;
+static bool     link_up = false;         /* wired pilot controller seen recently */
 
 /* Laser and battle statistics */
 static int      laser_energy = 0;
@@ -337,8 +331,87 @@ void HAL_UART_TxCpltCallback(UART_HandleTypeDef *huart)
     uart_kick();
 }
 
+/* ============================================================================
+ * 3b. WIRED LINK TO THE OTHER BOARD: UART4, PA0 = TX (Arduino D1), PA1 = RX
+ *     (Arduino D0), 115200 8N1. Drone: the Grove "UART" port of the shield.
+ *     Cross the wires: TX -> RX, RX -> TX, and connect GND.
+ * ==========================================================================*/
+UART_HandleTypeDef huart4;
+#define LINK_RX_SIZE 128U
+static uint8_t           link_rx_byte;
+static volatile uint8_t  link_ring[LINK_RX_SIZE];
+static volatile uint16_t link_head = 0, link_tail = 0;
+static char              link_line[32];
+static uint8_t           link_len = 0;
+static bool              link_ready = false;
+
+static void LINK_UART_Init(void)
+{
+#if ENABLE_LINK
+    __HAL_RCC_GPIOA_CLK_ENABLE();
+    __HAL_RCC_UART4_CLK_ENABLE();
+    GPIO_InitTypeDef g = {0};
+    g.Pin       = GPIO_PIN_0 | GPIO_PIN_1;
+    g.Mode      = GPIO_MODE_AF_PP;
+    g.Pull      = GPIO_PULLUP;                      /* idle high when unplugged */
+    g.Speed     = GPIO_SPEED_FREQ_LOW;
+    g.Alternate = GPIO_AF8_UART4;
+    HAL_GPIO_Init(GPIOA, &g);
+
+    huart4.Instance                    = UART4;
+    huart4.Init.BaudRate               = 115200;
+    huart4.Init.WordLength             = UART_WORDLENGTH_8B;
+    huart4.Init.StopBits               = UART_STOPBITS_1;
+    huart4.Init.Parity                 = UART_PARITY_NONE;
+    huart4.Init.Mode                   = UART_MODE_TX_RX;
+    huart4.Init.HwFlowCtl              = UART_HWCONTROL_NONE;
+    huart4.Init.OverSampling           = UART_OVERSAMPLING_16;
+    huart4.Init.OneBitSampling         = UART_ONE_BIT_SAMPLE_DISABLE;
+    huart4.AdvancedInit.AdvFeatureInit = UART_ADVFEATURE_NO_INIT;
+    if (HAL_UART_Init(&huart4) != HAL_OK) return;
+    HAL_NVIC_SetPriority(UART4_IRQn, 7, 0);
+    HAL_NVIC_EnableIRQ(UART4_IRQn);
+    HAL_UART_Receive_IT(&huart4, &link_rx_byte, 1);
+    link_ready = true;
+#endif
+}
+
+/* Short lines only (about 1 ms at 115200), so a blocking send is fine. */
+static void link_send(const char *s)
+{
+    if (link_ready) HAL_UART_Transmit(&huart4, (uint8_t *)s, (uint16_t)strlen(s), 20);
+}
+
+/* Next complete line from the other board, or NULL. */
+static char *link_getline(void)
+{
+    while (link_tail != link_head) {
+        char c = (char)link_ring[link_tail];
+        link_tail = (uint16_t)((link_tail + 1U) % LINK_RX_SIZE);
+        if (c == '\n' || c == '\r') {
+            if (link_len == 0) continue;
+            link_line[link_len] = '\0';
+            link_len = 0;
+            return link_line;
+        }
+        if (link_len < sizeof(link_line) - 1U && c >= 32 && c < 127) link_line[link_len++] = c;
+    }
+    return NULL;
+}
+
+void UART4_IRQHandler(void)
+{
+    HAL_UART_IRQHandler(&huart4);
+}
+
 void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
 {
+    if (huart->Instance == UART4) {
+        uint16_t next = (uint16_t)((link_head + 1U) % LINK_RX_SIZE);
+        if (next != link_tail) { link_ring[link_head] = link_rx_byte; link_head = next; }
+        HAL_UART_Receive_IT(&huart4, &link_rx_byte, 1);
+        return;
+    }
     if (huart->Instance != USART1) return;
     uint16_t next = (uint16_t)((rx_head + 1U) % RX_BUF_SIZE);
     if (next != rx_tail) {
@@ -350,6 +423,7 @@ void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
 
 void HAL_UART_ErrorCallback(UART_HandleTypeDef *huart)
 {
+    if (huart->Instance == UART4) { HAL_UART_Receive_IT(&huart4, &link_rx_byte, 1); return; }
     if (huart->Instance != USART1) return;
     HAL_UART_Receive_IT(&huart1, &rx_byte, 1);   /* HAL aborts RX on overrun */
 }
@@ -507,6 +581,18 @@ static void i2c1_set_speed(int khz)
     I2C1_Init();
 }
 
+/* Per-device speed on the shared bus: the displays (OLED, matrix) run at
+ * i2c_fast_khz, the 5-way at the speed its probe found (25 kHz on our module).
+ * Switching only re-programs the I2C timing register. */
+static int  i2c_fast_khz = 100;
+static int  fiveway_khz  = 25;
+static bool oled_ok = false;
+
+static void i2c_for(int khz)
+{
+    if (i2c_khz != khz) i2c1_set_speed(khz);
+}
+
 /* Short busy wait (roughly microseconds at 4 MHz), no SysTick needed. */
 static void i2c_gap(uint32_t n)
 {
@@ -631,7 +717,6 @@ static bool    mx_ok = false;
 static uint8_t mx_shown[8];
 static bool    mx_shown_valid = false;
 
-static const uint8_t GL_EXCLAIM[8] = {0x18,0x18,0x18,0x18,0x18,0x00,0x18,0x18};
 static const uint8_t GL_SMILE[8]   = {0x3C,0x42,0xA5,0x81,0xA5,0x99,0x42,0x3C};
 static const uint8_t GL_CROSS[8]   = {0x81,0x42,0x24,0x18,0x18,0x24,0x42,0x81};
 static const uint8_t GL_S[8]       = {0x3C,0x66,0x60,0x3C,0x06,0x66,0x3C,0x00};
@@ -659,6 +744,7 @@ static uint8_t mx_map(uint8_t b)
 static void mx_init(void)
 {
 #if ENABLE_MATRIX
+    i2c_for(i2c_fast_khz);
     mx_ok = i2c1_present(MATRIX_I2C_ADDR);
     if (!mx_ok) return;
     uint8_t c;
@@ -674,6 +760,7 @@ static void mx_show(const uint8_t rows[8])
 #if ENABLE_MATRIX
     if (!mx_ok) return;
     if (mx_shown_valid && memcmp(rows, mx_shown, 8) == 0) return;
+    i2c_for(i2c_fast_khz);
     uint8_t buf[17];
     buf[0] = 0x00;
     for (int r = 0; r < 8; r++) {
@@ -685,6 +772,197 @@ static void mx_show(const uint8_t rows[8])
     mx_shown_valid = true;
 #else
     (void)rows;
+#endif
+}
+
+/* ============================================================================
+ * 6b. OLED SSD1306/SSD1315 128x64 - framebuffer, one dirty page per loop pass
+ * ==========================================================================*/
+static const uint8_t font5x7[][5] = {
+    {0x00,0x00,0x00,0x00,0x00}, {0x00,0x00,0x5F,0x00,0x00}, {0x00,0x07,0x00,0x07,0x00}, /*   ! " */
+    {0x14,0x7F,0x14,0x7F,0x14}, {0x24,0x2A,0x7F,0x2A,0x12}, {0x23,0x13,0x08,0x64,0x62}, /* # $ % */
+    {0x36,0x49,0x55,0x22,0x50}, {0x00,0x05,0x03,0x00,0x00}, {0x00,0x1C,0x22,0x41,0x00}, /* & ' ( */
+    {0x00,0x41,0x22,0x1C,0x00}, {0x08,0x2A,0x1C,0x2A,0x08}, {0x08,0x08,0x3E,0x08,0x08}, /* ) * + */
+    {0x00,0x50,0x30,0x00,0x00}, {0x08,0x08,0x08,0x08,0x08}, {0x00,0x60,0x60,0x00,0x00}, /* , - . */
+    {0x20,0x10,0x08,0x04,0x02}, {0x3E,0x51,0x49,0x45,0x3E}, {0x00,0x42,0x7F,0x40,0x00}, /* / 0 1 */
+    {0x42,0x61,0x51,0x49,0x46}, {0x21,0x41,0x45,0x4B,0x31}, {0x18,0x14,0x12,0x7F,0x10}, /* 2 3 4 */
+    {0x27,0x45,0x45,0x45,0x39}, {0x3C,0x4A,0x49,0x49,0x30}, {0x01,0x71,0x09,0x05,0x03}, /* 5 6 7 */
+    {0x36,0x49,0x49,0x49,0x36}, {0x06,0x49,0x49,0x29,0x1E}, {0x00,0x36,0x36,0x00,0x00}, /* 8 9 : */
+    {0x00,0x56,0x36,0x00,0x00}, {0x08,0x14,0x22,0x41,0x00}, {0x14,0x14,0x14,0x14,0x14}, /* ; < = */
+    {0x00,0x41,0x22,0x14,0x08}, {0x02,0x01,0x51,0x09,0x06}, {0x32,0x49,0x79,0x41,0x3E}, /* > ? @ */
+    {0x7E,0x11,0x11,0x11,0x7E}, {0x7F,0x49,0x49,0x49,0x36}, {0x3E,0x41,0x41,0x41,0x22}, /* A B C */
+    {0x7F,0x41,0x41,0x22,0x1C}, {0x7F,0x49,0x49,0x49,0x41}, {0x7F,0x09,0x09,0x09,0x01}, /* D E F */
+    {0x3E,0x41,0x49,0x49,0x7A}, {0x7F,0x08,0x08,0x08,0x7F}, {0x00,0x41,0x7F,0x41,0x00}, /* G H I */
+    {0x20,0x40,0x41,0x3F,0x01}, {0x7F,0x08,0x14,0x22,0x41}, {0x7F,0x40,0x40,0x40,0x40}, /* J K L */
+    {0x7F,0x02,0x0C,0x02,0x7F}, {0x7F,0x04,0x08,0x10,0x7F}, {0x3E,0x41,0x41,0x41,0x3E}, /* M N O */
+    {0x7F,0x09,0x09,0x09,0x06}, {0x3E,0x41,0x51,0x21,0x5E}, {0x7F,0x09,0x19,0x29,0x46}, /* P Q R */
+    {0x46,0x49,0x49,0x49,0x31}, {0x01,0x01,0x7F,0x01,0x01}, {0x3F,0x40,0x40,0x40,0x3F}, /* S T U */
+    {0x1F,0x20,0x40,0x20,0x1F}, {0x3F,0x40,0x38,0x40,0x3F}, {0x63,0x14,0x08,0x14,0x63}, /* V W X */
+    {0x07,0x08,0x70,0x08,0x07}, {0x61,0x51,0x49,0x45,0x43}, {0x00,0x7F,0x41,0x41,0x00}, /* Y Z [ */
+    {0x02,0x04,0x08,0x10,0x20}, {0x00,0x41,0x41,0x7F,0x00}, {0x04,0x02,0x01,0x02,0x04}, /* \ ] ^ */
+    {0x40,0x40,0x40,0x40,0x40}, {0x00,0x01,0x02,0x04,0x00}, {0x20,0x54,0x54,0x54,0x78}, /* _ ` a */
+    {0x7F,0x48,0x44,0x44,0x38}, {0x38,0x44,0x44,0x44,0x20}, {0x38,0x44,0x44,0x48,0x7F}, /* b c d */
+    {0x38,0x54,0x54,0x54,0x18}, {0x08,0x7E,0x09,0x01,0x02}, {0x0C,0x52,0x52,0x52,0x3E}, /* e f g */
+    {0x7F,0x08,0x04,0x04,0x78}, {0x00,0x44,0x7D,0x40,0x00}, {0x20,0x40,0x44,0x3D,0x00}, /* h i j */
+    {0x7F,0x10,0x28,0x44,0x00}, {0x00,0x41,0x7F,0x40,0x00}, {0x7C,0x04,0x18,0x04,0x78}, /* k l m */
+    {0x7C,0x08,0x04,0x04,0x78}, {0x38,0x44,0x44,0x44,0x38}, {0x7C,0x14,0x14,0x14,0x08}, /* n o p */
+    {0x08,0x14,0x14,0x18,0x7C}, {0x7C,0x08,0x04,0x04,0x08}, {0x48,0x54,0x54,0x54,0x20}, /* q r s */
+    {0x04,0x3F,0x44,0x40,0x20}, {0x3C,0x40,0x40,0x20,0x7C}, {0x1C,0x20,0x40,0x20,0x1C}, /* t u v */
+    {0x3C,0x40,0x30,0x40,0x3C}, {0x44,0x28,0x10,0x28,0x44}, {0x0C,0x50,0x50,0x50,0x3C}, /* w x y */
+    {0x44,0x64,0x54,0x4C,0x44}, {0x00,0x08,0x36,0x41,0x00}, {0x00,0x00,0x7F,0x00,0x00}, /* z { | */
+    {0x00,0x41,0x36,0x08,0x00}, {0x10,0x08,0x08,0x10,0x08},                             /* } ~   */
+};
+
+#define OLED_LINES 8
+#define OLED_COLS  21
+static uint8_t oled_fb[OLED_LINES][128];
+static char    oled_text_cache[OLED_LINES][OLED_COLS + 1];
+static uint8_t oled_dirty = 0;
+
+static void oled_cmd(uint8_t c)
+{
+    uint8_t d[2] = { 0x00, c };
+    i2c1_write(OLED_I2C_ADDR, d, 2);
+}
+
+static void oled_init(void)
+{
+#if ENABLE_OLED
+    i2c_for(i2c_fast_khz);
+    oled_ok = i2c1_present(OLED_I2C_ADDR);
+    if (!oled_ok) return;
+    static const uint8_t seq[] = {
+        0xAE, 0xD5, 0x80, 0xA8, 0x3F, 0xD3, 0x00, 0x40,
+        0x8D, 0x14,             /* charge pump on        */
+        0x20, 0x02,             /* page addressing mode  */
+        0xA1, 0xC8, 0xDA, 0x12, 0x81, 0x7F, 0xD9, 0xF1, 0xDB, 0x40,
+        0xA4, 0xA6, 0xAF
+    };
+    for (unsigned i = 0; i < sizeof(seq); i++) oled_cmd(seq[i]);
+    memset(oled_fb, 0, sizeof(oled_fb));
+    memset(oled_text_cache, 0, sizeof(oled_text_cache));
+    oled_dirty = 0xFF;
+#endif
+}
+
+/* Write one 21-char text line; only marks the page dirty if text changed. */
+static void oled_line(uint8_t line, const char *text)
+{
+#if ENABLE_OLED
+    if (!oled_ok || line >= OLED_LINES) return;
+    char padded[OLED_COLS + 1];
+    size_t n = strlen(text);
+    for (unsigned i = 0; i < OLED_COLS; i++) padded[i] = (i < n) ? text[i] : ' ';
+    padded[OLED_COLS] = '\0';
+    if (strcmp(padded, oled_text_cache[line]) == 0) return;
+    strcpy(oled_text_cache[line], padded);
+
+    uint8_t *row = oled_fb[line];
+    memset(row, 0, 128);
+    for (unsigned i = 0; i < OLED_COLS; i++) {
+        char c = padded[i];
+        if (c < 32 || c > 126) c = ' ';
+        memcpy(&row[1 + i * 6], font5x7[c - 32], 5);
+    }
+    oled_dirty |= (uint8_t)(1U << line);
+#else
+    (void)line; (void)text;
+#endif
+}
+
+static void oled_linef(uint8_t line, const char *fmt, ...)
+{
+    char buf[48];
+    va_list ap;
+    va_start(ap, fmt);
+    vsnprintf(buf, sizeof(buf), fmt, ap);
+    va_end(ap);
+    oled_line(line, buf);
+}
+
+/* 2x scaled text over two pages (12 px per character, 14 px tall). */
+static void oled_big(uint8_t page, uint8_t x, const char *text)
+{
+#if ENABLE_OLED
+    if (!oled_ok || page + 1U >= OLED_LINES) return;
+    char key[OLED_COLS + 1];
+    snprintf(key, sizeof(key), "\x01%c%s", (char)('0' + (x & 63U)), text);
+    if (strcmp(key, oled_text_cache[page]) == 0) return;
+    strcpy(oled_text_cache[page], key);
+    strcpy(oled_text_cache[page + 1U], "\x02");
+    memset(oled_fb[page], 0, 128);
+    memset(oled_fb[page + 1U], 0, 128);
+    for (const char *c = text; *c && x + 10U <= 128U; c++, x = (uint8_t)(x + 12U)) {
+        char ch = (*c < 32 || *c > 126) ? ' ' : *c;
+        const uint8_t *g = font5x7[ch - 32];
+        for (int col = 0; col < 5; col++) {
+            uint16_t v = 0;
+            for (int b = 0; b < 7; b++) if (g[col] & (1U << b)) v |= (uint16_t)(3U << (2 * b));
+            for (int k = 0; k < 2; k++) {
+                oled_fb[page][x + col * 2 + k]       = (uint8_t)(v & 0xFFU);
+                oled_fb[page + 1U][x + col * 2 + k]  = (uint8_t)(v >> 8);
+            }
+        }
+    }
+    oled_dirty |= (uint8_t)(3U << page);
+#else
+    (void)page; (void)x; (void)text;
+#endif
+}
+
+/* Two-page tall segmented bar (e.g. laser energy 0..10). */
+static void oled_bar(uint8_t page, int value, int total)
+{
+#if ENABLE_OLED
+    if (!oled_ok || page + 1U >= OLED_LINES || total <= 0) return;
+    char key[OLED_COLS + 1];
+    snprintf(key, sizeof(key), "\x03%d/%d", value, total);
+    if (strcmp(key, oled_text_cache[page]) == 0) return;
+    strcpy(oled_text_cache[page], key);
+    strcpy(oled_text_cache[page + 1U], "\x02");
+    memset(oled_fb[page], 0, 128);
+    memset(oled_fb[page + 1U], 0, 128);
+    int w = 120 / total;                       /* segment pitch */
+    for (int i = 0; i < total; i++) {
+        int x0 = 4 + i * w, x1 = x0 + w - 3;
+        for (int x = x0; x <= x1 && x < 128; x++) {
+            bool edge = (x == x0 || x == x1);
+            if (i < value || edge) { oled_fb[page][x] = 0xFC; oled_fb[page + 1U][x] = 0x3F; }
+            else                   { oled_fb[page][x] = 0x04; oled_fb[page + 1U][x] = 0x20; }
+        }
+    }
+    oled_dirty |= (uint8_t)(3U << page);
+#else
+    (void)page; (void)value; (void)total;
+#endif
+}
+
+static void oled_flush_step(void)
+{
+#if ENABLE_OLED
+    if (!oled_ok || oled_dirty == 0) return;
+    i2c_for(i2c_fast_khz);
+    for (uint8_t p = 0; p < OLED_LINES; p++) {
+        if (oled_dirty & (1U << p)) {
+            uint8_t col = OLED_COL_OFFSET;
+            oled_cmd((uint8_t)(0xB0 + p));
+            oled_cmd((uint8_t)(0x00 | (col & 0x0F)));
+            oled_cmd((uint8_t)(0x10 | (col >> 4)));
+            uint8_t buf[129];
+            buf[0] = 0x40;
+            memcpy(&buf[1], oled_fb[p], 128);
+            if (!i2c1_write(OLED_I2C_ADDR, buf, sizeof(buf))) return;   /* retry next pass */
+            oled_dirty &= (uint8_t)~(1U << p);
+            return;
+        }
+    }
+#endif
+}
+
+static void oled_flush_all(void)
+{
+#if ENABLE_OLED
+    while (oled_ok && oled_dirty) oled_flush_step();
 #endif
 }
 
@@ -708,7 +986,6 @@ static const note_t SND_PEW[]     = { {2000,600,180,0} };                       
 static const note_t SND_BOOM[]    = { {420,80,550,1},{0,0,40,0},{120,60,250,1} }; /* p = 4-5 */
 static const note_t SND_READY[]   = { {2500,2500,20,0} };
 static const note_t SND_MODE[]    = { {2000,2000,60,0},{0,0,60,0},{2000,2000,60,0} };
-static const note_t SND_WARN[]    = { {1800,1800,80,0} };
 static const note_t SND_ALARM[]   = { {1500,1500,120,0},{0,0,60,0},{1500,1500,120,0} };
 static const note_t SND_HABITAT[] = { {1319,1319,120,0},{0,0,30,0},{1568,1568,220,0} };
 static const note_t SND_REPORT[]  = { {1200,1200,40,0},{0,0,30,0},{1600,1600,40,0} };
@@ -937,48 +1214,8 @@ static uint32_t check_thresholds(const sensors_t *s)
 }
 
 /* ============================================================================
- * 9. GROVE IR REFLECTIVE SENSOR (A0 = PC5, digital) AND 5-WAY SWITCH (I2C)
+ * 9. GROVE 5-WAY SWITCH (I2C)
  * ==========================================================================*/
-static bool    ir_ok = false;                /* module found on A0 */
-static bool    ir_detect = false;
-static uint8_t ir_same = 0;
-static GPIO_PinState ir_last_raw = GPIO_PIN_SET;
-static uint32_t t_ir = 0, t_ir_evt = 0;
-
-static void ir_pull(uint32_t pull)
-{
-    GPIO_InitTypeDef g = {0};
-    g.Pin  = GPIO_PIN_5;               /* PC5 = Grove A0 */
-    g.Mode = GPIO_MODE_INPUT;
-    g.Pull = pull;
-    HAL_GPIO_Init(GPIOC, &g);
-    for (volatile uint32_t i = 0; i < 200U; i++) { }   /* let the pin settle */
-}
-
-/* Presence test: the module's comparator drives the pin, so it reads the same
- * level with the internal pull-up and pull-down. A floating (empty) pin
- * follows the pull resistor instead. */
-static bool ir_probe(void)
-{
-#if ENABLE_IR
-    ir_pull(GPIO_PULLDOWN);
-    GPIO_PinState lo = HAL_GPIO_ReadPin(GPIOC, GPIO_PIN_5);
-    ir_pull(GPIO_PULLUP);
-    GPIO_PinState hi = HAL_GPIO_ReadPin(GPIOC, GPIO_PIN_5);
-    return lo == hi;                   /* pull-up stays on: unplugged reads "clear" */
-#else
-    return false;
-#endif
-}
-
-static void ir_init(void)
-{
-#if ENABLE_IR
-    __HAL_RCC_GPIOC_CLK_ENABLE();
-    ir_ok = ir_probe();
-#endif
-}
-
 static uint8_t  fiveway_addr = 0;                    /* 0 = not found */
 static uint8_t  fw_bits = 0, fw_prev = 0;            /* 5-way pressed bits */
 static uint32_t t_fw = 0, fw_hold_t0 = 0, fw_rep_t = 0;
@@ -1030,7 +1267,7 @@ static void fiveway_probe(bool verbose)
         if (i2c_khz != speeds[si]) i2c1_set_speed(speeds[si]);
         for (uint8_t m = 0; m < MS_M_COUNT; m++) {
             ms_method = m;
-            if (fiveway_try_id(fiveway_acked, verbose)) { fiveway_addr = fiveway_acked; return; }
+            if (fiveway_try_id(fiveway_acked, verbose)) { fiveway_addr = fiveway_acked; fiveway_khz = i2c_khz; return; }
         }
     }
     fiveway_failed = true;
@@ -1045,7 +1282,9 @@ static void fiveway_probe(bool verbose)
 static bool fiveway_read(uint8_t *bits)
 {
     uint8_t buf[4 + 5];
-    if (!fiveway_addr || !i2c1_cmd_read(fiveway_addr, MS_CMD_GET_DEV_EVENT, buf, sizeof(buf))) return false;
+    if (!fiveway_addr) return false;
+    i2c_for(fiveway_khz);
+    if (!i2c1_cmd_read(fiveway_addr, MS_CMD_GET_DEV_EVENT, buf, sizeof(buf))) return false;
     /* Sanity check: event word = 0 except bit 31 (has event), button bytes < 0x20
      * (raw level + click flags). Anything else means the buffer slipped. */
     bool sane = buf[0] == 0 && buf[1] == 0 && buf[2] == 0 && (buf[3] & 0x7FU) == 0;
@@ -1218,7 +1457,7 @@ static const char *end_name(uint8_t e)
  * ==========================================================================*/
 static uint8_t  map_rows[8];             /* bit7 = column 0 (left) */
 static bool     map_live = false;        /* a map exists for the current sortie */
-static uint32_t t_spread = 0, close_until = 0;
+static uint32_t t_spread = 0;
 static int      wave_no = 0;
 static bool     wave_active = false;     /* false during the AREA CLEARED pause */
 static uint32_t wave_pause_t = 0, spread_ms = WAVE_SPREAD_START_MS;
@@ -1242,6 +1481,8 @@ static int map_count(void)
     return n;
 }
 
+static void event_text(const char *t, uint8_t prio);   /* section 13 */
+
 /* --- Scouting (STANDBY): the same 8x8 area under fog, with hidden nests --- */
 static uint8_t  scout_fog[8];            /* bit set = not scanned yet */
 static uint8_t  scout_nest[8];           /* hidden nests */
@@ -1249,7 +1490,6 @@ static uint8_t  scout_found[8];          /* nests located */
 static int      scout_x = 3, scout_y = 7, scout_found_n = 0;
 static bool     scout_ready = false;
 static bool     scout_changed = true;
-static uint32_t t_scout_block = 0;
 
 static inline bool rbit(const uint8_t r[8], int x, int y) { return (r[y] & (0x80U >> x)) != 0; }
 static inline void rset(uint8_t r[8], int x, int y)       { r[y] |= (uint8_t)(0x80U >> x); }
@@ -1380,6 +1620,9 @@ static void scout_scan(bool announce)
             scout_found_n++;
             if (announce) {
                 uart_printf("[EVT] Scouting: nest found at (%d,%d) (%d/%d)\r\n", x, y, scout_found_n, SCOUT_NESTS);
+                char t[24];
+                snprintf(t, sizeof(t), "NEST FOUND %d/%d", scout_found_n, SCOUT_NESTS);
+                event_text(t, 2);
                 if (scout_found_n == SCOUT_NESTS) {
                     uart_printf("[EVT] Scouting complete: all %d nests located\r\n", SCOUT_NESTS);
                     bz_fx(SND(SND_VICTORY));
@@ -1415,14 +1658,6 @@ static int scout_scanned(void)
 static void scout_move(int dx, int dy)
 {
     if (state != ST_STANDBY || !scout_ready) return;
-    if (ir_ok && ir_detect) {                         /* obstacle: hold position */
-        if (elapsed(t_scout_block, SCOUT_BLOCK_MSG_MS)) {
-            t_scout_block = HAL_GetTick();
-            uart_write("[EVT] Obstacle at close range, holding position\r\n");
-            bz_fx(SND(SND_WARN));
-        }
-        return;
-    }
     int nx = scout_x + dx, ny = scout_y + dy;
     if (!inside(nx, ny) || (nx == scout_x && ny == scout_y)) return;
     scout_x = nx; scout_y = ny;
@@ -1430,18 +1665,13 @@ static void scout_move(int dx, int dy)
 }
 
 /* ============================================================================
- * 13. DASHBOARD LINES ([HUD], [MAP]) AND LED MATRIX CONTENT
+ * 13. DISPLAY CONTENT: OLED PAGES AND LED MATRIX
  * ==========================================================================*/
 static const uint8_t *icon = NULL;
 static uint32_t icon_until = 0;
 static bool     smile = false;
 static uint32_t smile_t0 = 0;
 static bool     boot_id_shown = false;
-static uint32_t t_hud = 0, t_map = 0;
-static uint8_t  map_sent[8];
-static int      map_sent_x = -1, map_sent_y = -1;
-static bool     map_sent_valid = false;
-
 static void show_icon(const uint8_t *g, uint32_t ms)
 {
     icon = g;
@@ -1455,57 +1685,198 @@ static int rescue_secs_left(void)
     return (int)((RESCUE_WINDOW_MS - t + 999U) / 1000U);
 }
 
-static void hud_send(void)
+/* --- OLED content ------------------------------------------------------- */
+#define OLED_PAGES 4
+static uint8_t  oled_page = 0;                   /* STANDBY page 0..3 */
+static int      bb_view = 0;                     /* black box page: record shown */
+static char     ev_text[24] = "";
+static uint32_t ev_until = 0;
+static uint8_t  ev_prio = 0;
+#define EV_NORMAL 1
+#define EV_EFFECT 2
+static uint32_t t_oled = 0;
+
+static bool event_active(void) { return ev_text[0] && (int32_t)(ev_until - HAL_GetTick()) > 0; }
+
+/* A message is never replaced by a less important one while still shown. */
+static void event_text(const char *t, uint8_t prio)
 {
-    int32_t cd = cooldown_active ? (int32_t)(cooldown_until - HAL_GetTick()) : 0;
-    if (cd < 0) cd = 0;
-    uart_printf("[HUD] ID %d MODE %s E %d P %d SEL %d CD %ld.%ld WAVE %d TGT %d DOWN %lu SHOTS %lu "
-                "ALT %.1f HAB %d RESC %d IR %d\r\n",
-                cfg.drone_id, mode_name(state), laser_energy, weapon_power(), weapon_sel ? 1 : 0,
-                (long)(cd / 1000), (long)((cd % 1000) / 100), map_live ? wave_no : 0,
-                map_live ? map_count() : 0, (unsigned long)zombies_down, (unsigned long)shots_fired,
-                altitude_m(), habitat_found ? 1 : 0,
-                state == ST_ATTACKED ? rescue_secs_left() : 0, (ir_ok && ir_detect) ? 1 : 0);
+    if (event_active() && prio < ev_prio) return;
+    strncpy(ev_text, t, sizeof(ev_text) - 1);
+    ev_text[sizeof(ev_text) - 1] = '\0';
+    ev_prio = prio;
+    ev_until = HAL_GetTick() + EVENT_TEXT_MS;
 }
 
-/* Scouting map for the dashboard: fog, located nests (never the hidden ones), drone. */
-static uint32_t t_scout_sent = 0;
-static void scout_send(void)
+/* Black box shown on OLED: the self-destructed drone's record if any,
+ * otherwise the last sortie still in RAM. */
+static const bb_image_t *bb_shown(void)
 {
-    char fog[17], nest[17];
-    for (int r = 0; r < 8; r++) {
-        snprintf(&fog[2 * r], 3, "%02X", scout_fog[r]);
-        snprintf(&nest[2 * r], 3, "%02X", scout_found[r]);
+    return bb_flash_valid ? bb_flash_image() : &bb;
+}
+
+static const bb_rec_t *bb_rec_at(const bb_image_t *img, int i)
+{
+    uint8_t start = (uint8_t)((img->head + BB_SIZE - img->count) % BB_SIZE);
+    return &img->rec[(start + (unsigned)i) % BB_SIZE];
+}
+
+static void bb_short(const bb_rec_t *r, char *buf, size_t n)
+{
+    switch (r->type) {
+        case BB_SORTIE:     snprintf(buf, n, "SORTIE START"); break;
+        case BB_CHARGE:     snprintf(buf, n, "CHARGE %d->%d", r->a, r->b); break;
+        case BB_FIRE:       snprintf(buf, n, "FIRE P%d (%d,%d) x%ld", r->a, r->b, r->c, (long)r->d); break;
+        case BB_OVERRUN:    snprintf(buf, n, "OVERRUN %d/64", r->a); break;
+        case BB_WEAPON:     snprintf(buf, n, "WEAPON %s %d", r->a ? "SEL" : "RULE", r->b); break;
+        case BB_FLIPPED:    snprintf(buf, n, "FLIPPED"); break;
+        case BB_RESCUED:    snprintf(buf, n, "RESCUED %ds LEFT", r->a); break;
+        case BB_STANDBY:    snprintf(buf, n, "BACK TO STANDBY"); break;
+        case BB_DESTRUCT:   snprintf(buf, n, "SELF-DESTRUCT"); break;
+        case BB_WAVE:       snprintf(buf, n, "WAVE %d: %d NESTS", r->a, r->b); break;
+        case BB_WAVE_CLEAR: snprintf(buf, n, "WAVE %d CLEARED", r->a); break;
+        default:            snprintf(buf, n, "?"); break;
     }
-    uart_printf("[SCOUT] FOG %s NEST %s POS %d %d FOUND %d %d SCAN %d\r\n",
-                fog, nest, scout_x, scout_y, scout_found_n, SCOUT_NESTS, scout_scanned());
-    scout_changed = false;
-    t_scout_sent = HAL_GetTick();
 }
 
-static void map_send(void)
+static void hud_boot_check(void)
 {
-    char hex[17];
-    for (int r = 0; r < 8; r++) snprintf(&hex[2 * r], 3, "%02X", map_live ? map_rows[r] : 0);
-    uart_printf("[MAP] %s AIM %d %d\r\n", hex, aim_x, aim_y);
-    memcpy(map_sent, map_rows, 8);
-    map_sent_x = aim_x; map_sent_y = aim_y;
-    map_sent_valid = true;
-    t_map = HAL_GetTick();
+    oled_line(0, "== SYSTEM CHECK ==");
+    oled_linef(1, "SENSORS      %s", sensors_ok ? "OK" : "FAIL");
+    oled_linef(2, "LED MATRIX   %s", mx_ok ? "OK" : "NOT FOUND");
+    oled_linef(3, "5-WAY        %s", fiveway_addr ? "OK" : "NOT FOUND");
+    oled_linef(4, "CONTROLLER   %s", link_up ? "LINKED" : "WAITING");
+    oled_linef(5, "BLACK BOX    %s", bb_flash_valid ? "FOUND" : "EMPTY");
+    oled_line(6, "");
+    oled_linef(7, "DRONE #%d  STARTING", cfg.drone_id);
 }
 
-static void dash_tick(void)
+static void hud_standby(void)
 {
-    if (!dash_on || state == ST_TERMINATED) return;
-    if (elapsed(t_hud, HUD_PERIOD_MS)) { t_hud = HAL_GetTick(); hud_send(); }
-    if (state == ST_BATTLE || state == ST_ATTACKED) {
-        bool changed = !map_sent_valid || memcmp(map_sent, map_rows, 8) != 0 ||
-                       map_sent_x != aim_x || map_sent_y != aim_y;
-        if (changed && elapsed(t_map, MAP_MIN_PERIOD_MS)) map_send();
+    if (!elapsed(boot_tick, BOOT_CHECK_MS)) { hud_boot_check(); return; }
+    oled_linef(0, "DRONE#%d STANDBY  %d/%d", cfg.drone_id, oled_page + 1, OLED_PAGES);
+    if (oled_page == 0) {                                    /* sensors */
+        if (sens_valid) {
+            oled_linef(1, "T %5.1f C  H %4.1f %%", sens.v[S_T], sens.v[S_H]);
+            oled_linef(2, "P %7.2f hPa", sens.v[S_P]);
+            oled_linef(3, "A %5.2f m/s2", sens.v[S_A]);
+            oled_linef(4, "G %6.2f dps", sens.v[S_G]);
+            oled_linef(5, "M %6.1f uT", sens.v[S_M]);
+            oled_linef(6, "ALT %+6.1f m", altitude_m());
+        }
+        if (warn_mask) {
+            char buf[40] = "WARN:";
+            for (int i = 0; i < S_COUNT; i++) {
+                if (warn_mask & (1UL << (2 * i)))     { strcat(buf, " "); strcat(buf, th[i].tag); strcat(buf, "LO"); }
+                if (warn_mask & (1UL << (2 * i + 1))) { strcat(buf, " "); strcat(buf, th[i].tag); strcat(buf, "HI"); }
+            }
+            oled_line(7, buf);
+        } else if (event_active()) oled_line(7, ev_text);
+        else oled_line(7, "STATUS: ALL NORMAL");
+    } else if (oled_page == 1) {                             /* scouting */
+        oled_linef(1, "NESTS FOUND   %d/%d%s", scout_found_n, SCOUT_NESTS, scout_found_n >= SCOUT_NESTS ? " ALL" : "");
+        oled_linef(2, "AREA SCANNED %2d/64", scout_scanned());
+        oled_linef(3, "SCOUT AT (%d,%d)", scout_x, scout_y);
+        oled_linef(4, "ALT %+6.1f m", altitude_m());
+        oled_line(5, habitat_found ? "HABITAT: FOUND" : "HABITAT: SEARCHING");
+        oled_line(6, "");
+        oled_line(7, event_active() ? ev_text : "5WAY FLY  MID PAGE");
+    } else if (oled_page == 2) {                             /* mission */
+        uint32_t sec = (HAL_GetTick() - boot_tick) / 1000U;
+        oled_linef(1, "FLIGHT %02lu:%02lu", (unsigned long)(sec / 60U), (unsigned long)(sec % 60U));
+        oled_linef(2, "ZOMBIES DOWN %lu", (unsigned long)zombies_down);
+        oled_linef(3, "SHOTS FIRED  %lu", (unsigned long)shots_fired);
+        oled_linef(4, "HABITATS     %lux", (unsigned long)habitat_count);
+        oled_linef(5, "CONTROLLER %s", link_up ? "LINKED" : "NONE");
+        oled_line(6, "");
+        oled_line(7, "1x REPORT 2x BATTLE");
+    } else {                                                 /* black box */
+        const bb_image_t *img = bb_shown();
+        oled_line(1, bb_flash_valid ? "BLACK BOX: LOST DRONE" : (img->count ? "BLACK BOX: LAST RUN" : "BLACK BOX: EMPTY"));
+        if (img->count == 0) {
+            for (uint8_t l = 2; l < 7; l++) oled_line(l, "");
+            oled_line(3, "  NO SORTIE YET");
+            oled_line(7, "MID PAGE");
+            return;
+        }
+        if (bb_view >= img->count) bb_view = img->count - 1;
+        if (bb_view < 0) bb_view = 0;
+        const bb_rec_t *rc = bb_rec_at(img, bb_view);
+        char ev[32];
+        bb_short(rc, ev, sizeof(ev));
+        oled_linef(2, "WAVES %u  SHOTS %u", img->waves, img->shots);
+        oled_linef(3, "CELLS CLEARED %u", img->cells);
+        oled_linef(4, "END: %s", end_name(img->end_reason));
+        oled_linef(5, "EVT %02d/%02d t=%lu.%lus", bb_view + 1, img->count,
+                   (unsigned long)(rc->t / 1000U), (unsigned long)((rc->t % 1000U) / 100U));
+        oled_line(6, ev);
+        oled_line(7, "<> EVENTS  MID PAGE");
     }
-    if (state == ST_STANDBY && scout_ready &&
-        ((scout_changed && elapsed(t_scout_sent, MAP_MIN_PERIOD_MS)) || elapsed(t_scout_sent, SCOUT_SEND_MS)))
-        scout_send();
+}
+
+static void hud_battle(void)
+{
+    int p = weapon_power();
+    int n = map_count();
+    if (wave_active) oled_linef(0, "WAVE %d   TARGETS %2d", wave_no, n);
+    else             oled_linef(0, "WAVE %d   CLEARED!", wave_no);
+    oled_bar(1, laser_energy, 10);
+    if (cooldown_active) {
+        int32_t sleft = (int32_t)(cooldown_until - HAL_GetTick());
+        uint32_t left = sleft > 0 ? (uint32_t)sleft : 0U;
+        oled_linef(3, "ENERGY %2d/10 COOL%lu.%lu", laser_energy, (unsigned long)(left / 1000U), (unsigned long)((left % 1000U) / 100U));
+    } else {
+        oled_linef(3, "ENERGY %2d/10 P%d %s", laser_energy, p, weapon_sel ? power_name(p) : "RULE");
+    }
+    oled_linef(4, "AIM (%d,%d)   %s", aim_x, aim_y, cell(aim_x, aim_y) ? "TARGET!" : "");
+    oled_linef(5, "DOWN %-4lu SHOTS %lu", (unsigned long)zombies_down, (unsigned long)shots_fired);
+    if (event_active())              oled_line(6, ev_text);
+    else if (n >= MAP_OVERRUN_CELLS) oled_line(6, "AREA OVERRUN!");
+    else                             oled_line(6, link_up ? "PILOT LINKED" : "");
+    oled_line(7, "1x CHARGE 2x STANDBY");
+}
+
+static void hud_attacked(void)
+{
+    char big[16];
+    snprintf(big, sizeof(big), "%2d s", rescue_secs_left());
+    oled_line(0, "!! UNDER ATTACK !!");
+    oled_linef(1, "DRONE #%d  RESCUE IN", cfg.drone_id);
+    oled_big(2, 40, big);
+    oled_line(4, "");
+    oled_line(5, "  DOUBLE-PRESS TO");
+    oled_line(6, "      RESCUE");
+    oled_line(7, "SOS BEACON ON");
+}
+
+static void hud_terminated(void)
+{
+    oled_line(0, "");
+    oled_linef(1, "   DRONE #%d LOST", cfg.drone_id);
+    oled_line(2, "");
+    oled_line(3, "  COMMS OFFLINE");
+    oled_line(4, "  BLACK BOX SAVED");
+    oled_linef(5, "  END: %s", end_name(bb.end_reason));
+    oled_line(6, "   press RESET");
+    oled_line(7, "");
+}
+
+static void hud_render(void)
+{
+    switch (state) {
+        case ST_STANDBY:  hud_standby();    break;
+        case ST_BATTLE:   hud_battle();     break;
+        case ST_ATTACKED: hud_attacked();   break;
+        default:          hud_terminated(); break;
+    }
+}
+
+/* Text lines are cached, so re-rendering only marks the changed pages dirty. */
+static void hud_tick(void)
+{
+    if (!oled_ok || !elapsed(t_oled, OLED_REFRESH_MS)) return;
+    t_oled = HAL_GetTick();
+    hud_render();
 }
 
 static void matrix_render(void)
@@ -1543,7 +1914,6 @@ static void matrix_render(void)
 
     /* BATTLE: infection map + crosshair + fire animation */
     memcpy(rows, map_rows, 8);
-    if ((int32_t)(close_until - now) > 0 && ((now / 250U) & 1U)) rows[7] &= (uint8_t)~0x18U;
     if (fire_anim) {
         uint32_t t = now - fire_t0;
         uint32_t beam_ms = 4U * BEAM_FRAME_MS;
@@ -1587,10 +1957,10 @@ static void send_stat(void)
                 weapon_sel ? "SELECT" : "RULE", p,
                 (unsigned long)shots_fired, (unsigned long)zombies_down,
                 altitude_m(), scout_scanned(), scout_found_n, SCOUT_NESTS);
-    uart_printf("[STAT] IR: %s, HABITAT: %s, MUTE: %s, MOUNT: %s, DASH: %s, LED MATRIX: %s, 5-WAY: %s\r\n",
-                !ir_ok ? "missing" : (ir_detect ? "DETECT" : "CLEAR"), habitat_found ? "FOUND" : "SEARCHING",
+    uart_printf("[STAT] CONTROLLER: %s, HABITAT: %s, MUTE: %s, MOUNT: %s, OLED: %s, LED MATRIX: %s, 5-WAY: %s\r\n",
+                link_up ? "LINKED" : "none", habitat_found ? "FOUND" : "SEARCHING",
                 cfg.muted ? "ON" : "OFF", cfg.mount_down ? "Z+ down" : "chip-up",
-                dash_on ? "ON" : "OFF",
+                oled_ok ? "OK" : "missing",
                 mx_ok ? "OK" : "missing", fiveway_addr ? "OK" : "missing");
 }
 
@@ -1607,10 +1977,11 @@ static void enter_standby(void)
     warn_mask = 0;
     map_live = false;                 /* map is wiped when leaving BATTLE */
     scout_new();                      /* a new area to scout */
+    oled_page = 0;
+    bb_view = 0;
     cooldown_active = false;
     fire_anim = false;
     t_sensor = HAL_GetTick() - SENSOR_PERIOD_MS;
-    t_hud = HAL_GetTick() - HUD_PERIOD_MS;
 }
 
 static void enter_battle(bool from_rescue)
@@ -1633,8 +2004,6 @@ static void enter_battle(bool from_rescue)
     t_flip_poll = HAL_GetTick();
     t_spread = HAL_GetTick();
     if (!wave_active) wave_pause_t = HAL_GetTick();
-    map_sent_valid = false;
-    t_hud = HAL_GetTick() - HUD_PERIOD_MS;
     send_stat();
 }
 
@@ -1649,12 +2018,12 @@ static void enter_attacked(float az)
     t_led = t_attack_start;
     bz_play(SND(SND_SOS), true);                        /* distress beacon, ignores MUTE */
     uart_printf("[EVT] Drone #%d flipped! The Last of EE2028\r\n", cfg.drone_id);
-    t_hud = HAL_GetTick() - HUD_PERIOD_MS;
 }
 
 static void rescue(void)
 {
     uart_printf("[EVT] Drone #%d rescued! Returning to BATTLE MODE\r\n", cfg.drone_id);
+    event_text("RESCUED!", EV_EFFECT);
     bb_log(BB_RESCUED, rescue_secs_left(), 0, 0, 0);
     flip_armed = false;
     smile = true;
@@ -1676,13 +2045,20 @@ static void terminate(void)
                 cfg.drone_id, saved ? "saved" : "NOT saved");
     led_set(false);
     matrix_render();
+    hud_render();
+    oled_flush_all();                                    /* the OLED keeps this image */
     bz_play(SND(SND_GAMEOVER), false);
 
     uint32_t t0 = HAL_GetTick();
     while (!elapsed(t0, 2500U)) bz_update();        /* let the last message and tune finish */
     uart_flush(500);
 
-    /* Cut all communication (spec) */
+    /* Cut all communication (spec): the controller hears it first, then UART4 and USART1 go */
+    link_send("LINK TERMINATED\n");
+    link_ready = false;
+    HAL_UART_AbortReceive(&huart4);
+    HAL_UART_DeInit(&huart4);
+    HAL_NVIC_DisableIRQ(UART4_IRQn);
     uart_enabled = false;
     HAL_UART_AbortReceive(&huart1);
     HAL_UART_DeInit(&huart1);
@@ -1733,9 +2109,13 @@ static void laser_fire(void)
         uart_printf("[EVT] LASER FIRED (%d/10, %s) at (%d,%d): %d cell%s cleared. Energy %d/10 -> %d/10. Zombies down: %lu\r\n",
                     p, power_name(p), aim_x, aim_y, cleared, cleared > 1 ? "s" : "", before, laser_energy,
                     (unsigned long)zombies_down);
+        char t[24];
+        snprintf(t, sizeof(t), "HIT! %d CELL%s CLEARED", cleared, cleared > 1 ? "S" : "");
+        event_text(t, EV_EFFECT);
     } else {
         uart_printf("[EVT] LASER FIRED (%d/10, %s) at (%d,%d): missed, no zombies there. Energy %d/10 -> %d/10\r\n",
                     p, power_name(p), aim_x, aim_y, before, laser_energy);
+        event_text("MISSED!", EV_EFFECT);
     }
     bb_log(BB_FIRE, p, aim_x, aim_y, cleared);
 
@@ -1769,10 +2149,15 @@ static void weapon_set(bool sel, int p)
 {
     weapon_sel = sel;
     if (sel) weapon_p = p;
-    if (sel)
+    char t[24];
+    if (sel) {
         uart_printf("[EVT] Weapon: power %d/10 (%s), cooldown %d s\r\n", p, power_name(p), p >= 2 ? p : 0);
-    else
+        snprintf(t, sizeof(t), "POWER %d/10 %s", p, power_name(p));
+    } else {
         uart_write("[EVT] Weapon: rule mode 5/10, no cooldown\r\n");
+        snprintf(t, sizeof(t), "RULE MODE 5/10");
+    }
+    event_text(t, EV_NORMAL);
     if (!sel) cooldown_active = false;
     bb_log(BB_WEAPON, sel, weapon_power(), 0, 0);
     bz_fx(SND(SND_REPORT));
@@ -1799,6 +2184,7 @@ static void target_lock(void)
 {
     aim_nearest();
     uart_printf("[EVT] Target locked at (%d,%d)\r\n", aim_x, aim_y);
+    event_text("TARGET LOCKED", EV_NORMAL);
 }
 
 /* --- Altitude zero here (5-way centre hold / HOME) --- */
@@ -1807,6 +2193,7 @@ static void altitude_rezero(bool from_cmd)
     altitude_zero(BSP_PSENSOR_ReadPressure());
     if (from_cmd) uart_printf("[CMD] OK altitude zero at %.2f hPa\r\n", p0_hpa);
     else          uart_printf("[EVT] Altitude zero reset at %.2f hPa\r\n", p0_hpa);
+    event_text("ALTITUDE ZERO SET", EV_NORMAL);
     bz_fx(SND(SND_MODE));
 }
 
@@ -1820,6 +2207,7 @@ static void scout_report(void)
                 scout_scanned(), scout_found_n, SCOUT_NESTS, (unsigned long)habitat_count,
                 (unsigned long)zombies_down, (unsigned long)shots_fired);
     bz_fx(SND(SND_REPORT));
+    event_text("REPORT SENT", EV_NORMAL);
 }
 
 /* --- Actions shared by the push button and UART commands --- */
@@ -1842,54 +2230,25 @@ static void action_double(void)
     }
 }
 
-/* --- IR sensor --- */
-static void on_ir(bool detected)
-{
-    if (!detected || (state != ST_STANDBY && state != ST_BATTLE)) return;
-    if (t_ir_evt != 0 && !elapsed(t_ir_evt, IR_EVENT_COOLDOWN_MS)) return;
-    t_ir_evt = HAL_GetTick();
-    if (state == ST_BATTLE) {
-        if (!wave_active) return;                       /* AREA CLEARED pause */
-        cell_set(3, 7); cell_set(4, 7);
-        close_until = HAL_GetTick() + CLOSE_BLINK_MS;
-        uart_write("[EVT] ZOMBIE AT CLOSE RANGE!\r\n");
-        bb_log(BB_CLOSE, 0, 0, 0, 0);
-        bz_fx(SND(SND_ALARM));
-    } else {
-        uart_write("[EVT] Obstacle at close range, holding position\r\n");
-        show_icon(GL_EXCLAIM, ICON_MS);
-        bz_fx(SND(SND_WARN));
-    }
-}
-
-static void ir_tick(void)
-{
-#if ENABLE_IR
-    if (!ir_ok || !elapsed(t_ir, IR_POLL_MS)) return;
-    t_ir = HAL_GetTick();
-    GPIO_PinState raw = HAL_GPIO_ReadPin(GPIOC, GPIO_PIN_5);
-    if (raw == ir_last_raw) { if (ir_same < 255) ir_same++; }
-    else { ir_last_raw = raw; ir_same = 1; }
-    bool det = (raw == IR_DETECT_LEVEL);
-    if (ir_same >= IR_STABLE_SAMPLES && det != ir_detect) {
-        ir_detect = det;
-        on_ir(det);
-    }
-#endif
-}
-
 /* --- 5-way switch --- */
 static void fiveway_dir(int idx)
 {
     int dx = idx == FIVEWAY_IDX_LEFT ? -1 : (idx == FIVEWAY_IDX_RIGHT ? 1 : 0);
     int dy = idx == FIVEWAY_IDX_UP   ? -1 : (idx == FIVEWAY_IDX_DOWN  ? 1 : 0);
-    if (state == ST_STANDBY)     scout_move(dx, dy);  /* fly the scout drone */
+    if (state == ST_STANDBY && oled_page == 3 && dx) {  /* black box page: browse */
+        int n = bb_shown()->count;
+        bb_view += dx;
+        if (bb_view < 0) bb_view = 0;
+        if (bb_view > n - 1) bb_view = n > 0 ? n - 1 : 0;
+    }
+    else if (state == ST_STANDBY) scout_move(dx, dy);  /* fly the scout drone */
     else if (state == ST_BATTLE) aim_move(dx, dy);    /* move the crosshair  */
 }
 
 static void fiveway_center_short(void)
 {
     if (state == ST_BATTLE) target_lock();
+    else if (state == ST_STANDBY) { oled_page = (uint8_t)((oled_page + 1U) % OLED_PAGES); bb_view = 0; }
 }
 
 static void fiveway_center_hold(void)
@@ -2005,6 +2364,7 @@ static void battle_tick(void)
         bb.waves++;
         bb_log(BB_WAVE_CLEAR, wave_no, bb.cells, 0, 0);
         uart_printf("[EVT] Wave %d cleared! AREA CLEARED (%u cells cleared this sortie)\r\n", wave_no, bb.cells);
+        event_text("AREA CLEARED!", EV_EFFECT);
         bz_fx(SND(SND_VICTORY));
     } else if (map_live && !wave_active && elapsed(wave_pause_t, WAVE_PAUSE_MS)) {
         wave_start(wave_no + 1);
@@ -2069,10 +2429,66 @@ static void attacked_tick(void)
     }
 }
 
+/* --- Drone side of the wired link: controller lines -> the same actions as
+ *     the 5-way / UART commands; LINK <mode> back for the controller's LED. --- */
+static uint32_t t_link_tx = 0, t_link_rx = 0;
+
+static void link_on_line(const char *l)
+{
+    int dx, dy;
+    t_link_rx = HAL_GetTick();
+    if (!link_up) {
+        link_up = true;
+        uart_write("[EVT] Pilot controller connected\r\n");
+        event_text("PILOT LINKED", EV_NORMAL);
+    }
+    if (sscanf(l, "TILT %d %d", &dx, &dy) == 2) {
+        dx = dx > 0 ? 1 : (dx < 0 ? -1 : 0);
+        dy = dy > 0 ? 1 : (dy < 0 ? -1 : 0);
+        if (state == ST_STANDBY) scout_move(dx, dy);
+        else if (state == ST_BATTLE) { aim_manual = true; aim_move(dx, dy); }
+    } else if (!strcmp(l, "BTN SINGLE")) {
+        if (state == ST_BATTLE) { aim_manual = true; target_lock(); }
+    } else if (!strcmp(l, "BTN DOUBLE")) {
+        if (state == ST_BATTLE) weapon_next();
+        else if (state == ST_ATTACKED) {
+            uart_write("[EVT] Lab rescue team dispatched by the pilot\r\n");
+            rescue();
+        }
+    }
+}
+
+static void link_tick(void)
+{
+#if ENABLE_LINK
+    const char *l;
+    while ((l = link_getline()) != NULL) link_on_line(l);
+    if (link_up && elapsed(t_link_rx, LINK_TIMEOUT_MS)) {
+        link_up = false;
+        uart_write("[EVT] Pilot controller lost\r\n");
+        event_text("PILOT LOST", EV_NORMAL);
+    }
+    if (elapsed(t_link_tx, LINK_PERIOD_MS)) {
+        t_link_tx = HAL_GetTick();
+        char b[24];
+        snprintf(b, sizeof(b), "LINK %s\n", mode_name(state));
+        link_send(b);
+    }
+#endif
+}
+
 /* ============================================================================
  * 15. PILOT CONTROLLER (ROLE CONTROLLER): board 2, no external modules.
- *     Sends [CTL] lines; the dashboard turns them into drone commands.
+ *     Wired to the drone on UART4; its own USART1 (USB) is only for HELP,
+ *     STATUS, ROLE and for watching what it sends.
  * ==========================================================================*/
+static void ctl_emit(const char *msg, bool echo)
+{
+    char b[32];
+    snprintf(b, sizeof(b), "%s\n", msg);
+    link_send(b);
+    if (echo) uart_printf("[CTL] %s\r\n", msg);
+}
 static int      ctl_tx = 0, ctl_ty = 0;          /* current tilt direction */
 static uint32_t t_ctl_tilt = 0, t_ctl_rep = 0, t_ctl_alive = 0, t_ctl_link = 0;
 static uint8_t  ctl_link = 0xFF;                 /* drone mode from LINK, 0xFF = none */
@@ -2113,7 +2529,9 @@ static void ctl_tilt_tick(void)
     if (tx == 0 && ty == 0) return;
     if (fresh || elapsed(t_ctl_rep, CTL_TILT_REPEAT_MS)) {
         t_ctl_rep = HAL_GetTick();
-        uart_printf("[CTL] TILT %d %d\r\n", tx, ty);
+        char m[16];
+        snprintf(m, sizeof(m), "TILT %d %d", tx, ty);
+        ctl_emit(m, true);
     }
 }
 
@@ -2137,7 +2555,7 @@ static void ctl_cmd(const char *verb, const char *arg1)
     }
     if (!strcmp(verb, "HELP")) {
         uart_write("[CMD] Controller: tilt = aim, 1x = lock target, 2x = weapon power / rescue team\r\n"
-                   "[CMD]   STATUS | ROLE DRONE | LINK <mode> (sent by the dashboard)\r\n");
+                   "[CMD]   STATUS | ROLE DRONE   (wire: UART4 PA0/PA1 = D1/D0 to the drone's Grove UART port)\r\n");
         return;
     }
     if (!strcmp(verb, "STATUS")) {
@@ -2163,7 +2581,7 @@ static void ctl_cmd(const char *verb, const char *arg1)
 static void cmd_help(void)
 {
     uart_write("[CMD] Commands:\r\n"
-               "[CMD]   HELP | STATUS | THRESH | SET <T|P|H|A|G|M>_<LOW|HIGH> <v> | DASH ON|OFF\r\n"
+               "[CMD]   HELP | STATUS | THRESH | SET <T|P|H|A|G|M>_<LOW|HIGH> <v>\r\n"
                "[CMD]   MODE STANDBY|BATTLE | CHARGE | RESCUE\r\n"
                "[CMD]   battle:  AIM <dx> <dy> (crosshair) | LOCK | POWER RULE|1..5|NEXT\r\n"
                "[CMD]   standby: AIM <dx> <dy> (fly the scout) | HOME | BLACKBOX | ID <1..9> | MOUNT CHIPUP|ZDOWN | MUTE ON|OFF | ROLE DRONE|CONTROLLER\r\n"
@@ -2370,14 +2788,6 @@ static void cmd_exec(char *line)
         return;
     }
 
-    if (!strcmp(verb, "DASH")) {
-        bool on;
-        if (!parse_on_off(verb, arg1, &on)) return;
-        dash_on = on; t_hud = HAL_GetTick() - HUD_PERIOD_MS; map_sent_valid = false;
-        uart_printf("[CMD] OK %s %s\r\n", verb, on ? "ON" : "OFF");
-        return;
-    }
-
     /* --- Standby only: configuration (saved to flash) and tools --- */
     bool is_cfg = !strcmp(verb, "MUTE") || !strcmp(verb, "ID") || !strcmp(verb, "MOUNT") || !strcmp(verb, "ROLE");
     bool is_sb  = is_cfg || !strcmp(verb, "HOME") || !strcmp(verb, "BLACKBOX");
@@ -2429,11 +2839,12 @@ static void cmd_exec(char *line)
     if (!strcmp(verb, "I2CSPEED")) {
         int k = arg1 ? atoi(arg1) : 0;
         uint32_t t = k == 100 ? I2C_TIMING_100K : (k == 50 ? I2C_TIMING_50K : (k == 25 ? I2C_TIMING_25K : 0));
-        if (!t) { uart_write("[CMD] ERR usage: I2CSPEED 100 | 50 | 25   (kHz)\r\n"); return; }
+        if (!t) { uart_write("[CMD] ERR usage: I2CSPEED 100 | 50 | 25   (kHz, OLED + matrix)\r\n"); return; }
         (void)t;
-        i2c1_set_speed(k);
-        mx_ok = false; mx_shown_valid = false;                       /* re-probed within 2 s */
-        uart_printf("[CMD] OK I2C at %d kHz, modules will be re-probed\r\n", k);
+        i2c_fast_khz = k;
+        i2c_for(k);
+        mx_shown_valid = false; oled_dirty = 0xFF;
+        uart_printf("[CMD] OK displays (OLED, matrix) at %d kHz, 5-way stays at %d kHz\r\n", k, fiveway_khz);
         return;
     }
     if (!strcmp(verb, "FIVEWAY")) {
@@ -2454,9 +2865,8 @@ static void cmd_exec(char *line)
     if (!strcmp(verb, "INPUTS")) {
         uint8_t f = 0;
         bool fok = fiveway_read(&f);
-        uart_printf("[CMD] 5-WAY@0x%02X %s pressed idx0..4 = %d%d%d%d%d | IR pin %d (%s)\r\n",
-                    fiveway_addr, fok ? "ok" : "--", f & 1, (f >> 1) & 1, (f >> 2) & 1, (f >> 3) & 1, (f >> 4) & 1,
-                    (int)HAL_GPIO_ReadPin(GPIOC, GPIO_PIN_5), !ir_ok ? "missing" : (ir_detect ? "DETECT" : "CLEAR"));
+        uart_printf("[CMD] 5-WAY@0x%02X %s pressed idx0..4 = %d%d%d%d%d\r\n",
+                    fiveway_addr, fok ? "ok" : "--", f & 1, (f >> 1) & 1, (f >> 2) & 1, (f >> 3) & 1, (f >> 4) & 1);
         return;
     }
     if (!strcmp(verb, "I2CDUMP")) {
@@ -2564,14 +2974,15 @@ static void app_init(void)
     boot_tick = HAL_GetTick();
     BSP_LED_Init(LED2);
     UART1_Init();
+    LINK_UART_Init();
     sensors_init();
     uint32_t up = HAL_GetTick();                      /* Grove modules' own MCUs need to boot */
     if (up < MODULE_BOOT_MS) HAL_Delay(MODULE_BOOT_MS - up);
     I2C1_Init();
     if (i2c1_ready && i2c1_bus_stuck()) i2c1_recover();   /* RESET does not reset the modules */
     mx_init();
+    oled_init();
     buzzer_init();
-    ir_init();
     fiveway_probe(false);
     GPIO_IT_Init();
 
@@ -2582,9 +2993,9 @@ static void app_init(void)
     else if (fiveway_acked)
         uart_printf("[EVT] 5-way diag: device at 0x%02X answers its address but no speed/read method gave the ID. "
                     "Last: %s. Type FIVEWAY for details\r\n", fiveway_acked, i2c_diag);
-    uart_printf("[EVT] System check: sensors %s, LED matrix %s, 5-way %s, IR %s. Type HELP for commands.\r\n",
-                sensors_ok ? "OK" : "FAIL", mx_ok ? "OK" : "NOT FOUND", fiveway_addr ? "OK" : "NOT FOUND",
-                ir_ok ? "OK" : "NOT FOUND");
+    uart_printf("[EVT] System check: sensors %s, LED matrix %s, OLED %s, 5-way %s. Type HELP for commands.\r\n",
+                sensors_ok ? "OK" : "FAIL", mx_ok ? "OK" : "NOT FOUND", oled_ok ? "OK" : "NOT FOUND",
+                fiveway_addr ? "OK" : "NOT FOUND");
 #if ENABLE_DEV_TOOLS
     i2c_scan();
 #endif
@@ -2641,9 +3052,9 @@ static void app_loop(void)
             mx_init();
             if (mx_ok) uart_write("[EVT] LED matrix connected\r\n");
         }
-        if (ENABLE_IR && !ir_ok) {
-            ir_ok = ir_probe();
-            if (ir_ok) { ir_same = 0; uart_write("[EVT] IR sensor connected\r\n"); }
+        if (!oled_ok) {
+            oled_init();
+            if (oled_ok) uart_write("[EVT] OLED connected\r\n");
         }
         if (!fiveway_addr && !fiveway_failed && ENABLE_FIVEWAY) {   /* newly plugged in */
             fiveway_probe(false);
@@ -2658,10 +3069,11 @@ static void app_loop(void)
         default: break;
     }
 
-    if (state != ST_TERMINATED) ir_tick();
+    if (state != ST_TERMINATED) link_tick();
     bz_update();
     matrix_render();
-    dash_tick();
+    hud_tick();
+    oled_flush_step();
 }
 
 static void ctl_init(void)
@@ -2671,8 +3083,9 @@ static void ctl_init(void)
     UART1_Init();
     BSP_ACCELERO_Init();
     GPIO_IT_Init();
+    LINK_UART_Init();
     led_set(false);
-    uart_write("\r\n=== Pilot controller online === tilt = aim, 1x = lock, 2x = power / rescue. Type HELP\r\n");
+    uart_write("\r\n=== Pilot controller online === tilt = fly / aim, 1x = lock, 2x = power / rescue. Type HELP\r\n");
 }
 
 static void ctl_loop(void)
@@ -2680,11 +3093,14 @@ static void ctl_loop(void)
     uint8_t singles, doubles;
     uart_poll_commands();
     button_collect(&singles, &doubles);
-    while (singles--) uart_write("[CTL] BTN SINGLE\r\n");
-    while (doubles--) uart_write("[CTL] BTN DOUBLE\r\n");
+    while (singles--) ctl_emit("BTN SINGLE", true);
+    while (doubles--) ctl_emit("BTN DOUBLE", true);
+    const char *l;
+    while ((l = link_getline()) != NULL)                     /* "LINK <mode>" from the drone */
+        if (!strncmp(l, "LINK ", 5)) ctl_cmd("LINK", l + 5);
     ctl_tilt_tick();
     ctl_led_tick();
-    if (elapsed(t_ctl_alive, CTL_ALIVE_MS)) { t_ctl_alive = HAL_GetTick(); uart_write("[CTL] ALIVE\r\n"); }
+    if (elapsed(t_ctl_alive, CTL_ALIVE_MS)) { t_ctl_alive = HAL_GetTick(); ctl_emit("ALIVE", false); }
 }
 
 int main(void)

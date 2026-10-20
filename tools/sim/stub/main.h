@@ -5,7 +5,8 @@
 typedef enum { HAL_OK = 0, HAL_ERROR } HAL_StatusTypeDef;
 typedef enum { GPIO_PIN_RESET = 0, GPIO_PIN_SET } GPIO_PinState;
 typedef struct { int id; } GPIO_TypeDef;
-extern GPIO_TypeDef sim_gpiob, sim_gpioc, sim_gpiod;
+extern GPIO_TypeDef sim_gpioa, sim_gpiob, sim_gpioc, sim_gpiod;
+#define GPIOA (&sim_gpioa)
 #define GPIOB (&sim_gpiob)
 #define GPIOC (&sim_gpioc)
 #define GPIOD (&sim_gpiod)
@@ -33,7 +34,8 @@ GPIO_PinState HAL_GPIO_ReadPin(GPIO_TypeDef *p, uint16_t pin);
 #define __HAL_RCC_TIM3_CLK_ENABLE() ((void)0)
 #define __HAL_RCC_USART1_CLK_ENABLE() ((void)0)
 typedef struct { int id; } PERIPH;
-extern PERIPH sim_i2c1, sim_usart1, sim_tim3;
+extern PERIPH sim_i2c1, sim_usart1, sim_tim3, sim_uart4;
+#define UART4 (&sim_uart4)
 #define I2C1 (&sim_i2c1)
 #define USART1 (&sim_usart1)
 #define TIM3 (&sim_tim3)
@@ -61,7 +63,7 @@ HAL_StatusTypeDef HAL_TIM_PWM_Start(TIM_HandleTypeDef *h, uint32_t c);
 #define __HAL_TIM_GET_COUNTER(h) ((h)->cnt)
 #define __HAL_TIM_SET_COUNTER(h,v) ((h)->cnt = (v))
 uint32_t HAL_RCC_GetPCLK1Freq(void);
-typedef enum { EXTI15_10_IRQn = 40, USART1_IRQn = 37 } IRQn_Type;
+typedef enum { EXTI15_10_IRQn = 40, USART1_IRQn = 37, UART4_IRQn = 52 } IRQn_Type;
 void HAL_NVIC_SetPriority(IRQn_Type i, uint32_t a, uint32_t b);
 void HAL_NVIC_EnableIRQ(IRQn_Type i);
 void HAL_NVIC_DisableIRQ(IRQn_Type i);
@@ -150,3 +152,9 @@ enum { GPIO_PULLDOWN = 300 };
 #define HAL_I2C_ERROR_TIMEOUT 0x20u
 #define I2C_MEMADD_SIZE_8BIT 1u
 HAL_StatusTypeDef HAL_I2C_Mem_Read(I2C_HandleTypeDef *h, uint16_t a, uint16_t mem, uint16_t ms, uint8_t *d, uint16_t n, uint32_t to);
+/* --- additions for the UART4 controller link --- */
+#define GPIO_PIN_0 0x0001
+enum { GPIO_AF8_UART4 = 400 };
+#define __HAL_RCC_GPIOA_CLK_ENABLE() ((void)0)
+#define __HAL_RCC_UART4_CLK_ENABLE() ((void)0)
+HAL_StatusTypeDef HAL_UART_Transmit(UART_HandleTypeDef *h, uint8_t *d, uint16_t n, uint32_t to);

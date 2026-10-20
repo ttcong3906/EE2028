@@ -1,14 +1,15 @@
 /* Real-time runner: firmware UART on a pty, sim inputs on a control FIFO.
  *   simrt <uart-pty> <control-fifo> <flash-file>
- * Control lines: press | dbl | flip | unflip | ir | tilt ax ay az (mg) | fw <idx> <ms> | quit
+ * Control lines: press | dbl | flip | unflip | tilt ax ay az (mg) | fw <idx> <ms> | quit
+ * (the UART4 controller link is not wired in this runner)
  *
  * Build (after run_tests.sh created build/):  gcc -std=gnu11 -Istub -Ibuild -o build/simrt simrt.c -lm
- * Wire it to the dashboard on Linux:
+ * Talk to it on Linux:
  *   socat pty,raw,echo=0,link=/tmp/drone pty,raw,echo=0,link=/tmp/drone_fw &
  *   mkfifo /tmp/drone.in; (sleep 1e9 > /tmp/drone.in) &
  *   build/simrt /tmp/drone_fw /tmp/drone.in /tmp/drone.flash &
- *   python3 ../dashboard.py --drone /tmp/drone
- *   echo dbl > /tmp/drone.in      # double press -> BATTLE;  echo flip > /tmp/drone.in ... */
+ *   screen /tmp/drone 115200      # or any serial terminal
+ *   echo dbl > /tmp/drone.in      # double press -> BATTLE */
 #define SIM_RT
 #include "sim.c"
 #include <sys/stat.h>
@@ -30,7 +31,6 @@ static void control(char *l)
     else if (!strncmp(l, "dbl", 3))   { btn_edge(0); press_until = tick + 60; press2_at = tick + 200; }
     else if (!strncmp(l, "unflip", 6)) s_acc[2] = 1000;
     else if (!strncmp(l, "flip", 4))  s_acc[2] = -1000;
-    else if (!strncmp(l, "ir", 2))    { ir_pin = 0; }
     else if (sscanf(l, "tilt %d %d %d", &a, &b, &c) == 3) { s_acc[0] = (int16_t)a; s_acc[1] = (int16_t)b; s_acc[2] = (int16_t)c; }
     else if (sscanf(l, "fw %d %d", &a, &b) == 2) { sim_fw = (uint8_t)(1u << a); fw_until = tick + (uint32_t)b; }
     else if (!strncmp(l, "quit", 4))  exit(0);
@@ -70,7 +70,6 @@ int main(int argc, char **argv)
         if (press_until && tick >= press_until) { btn_edge(1); press_until = 0; }
         if (press2_at && tick >= press2_at) { btn_edge(0); press_until = tick + 60; press2_at = 0; }
         if (fw_until && tick >= fw_until) { sim_fw = 0; fw_until = 0; }
-        if (ir_pin == 0) { static uint32_t t_ir0 = 0; if (!t_ir0) t_ir0 = tick; if (tick - t_ir0 > 150) { ir_pin = 1; t_ir0 = 0; } }
         if (ctl_mode) ctl_loop(); else app_loop();
         service_isrs();
         usleep(300);
