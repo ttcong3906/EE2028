@@ -211,7 +211,6 @@ BATTLE không gửi telemetry định kỳ, chỉ gửi sự kiện.
 2. `[EVT] Drone #3: no rescue. Black box saved. Self-destructing. Cutting all communication.`
 3. Matrix dấu X, giai điệu kết thúc. Tắt LED2, tắt UART (và WiFi nếu có, giữ module ở trạng thái reset), tắt các ngắt, MCU vào Standby mode.
 4. Chỉ nút **RESET** đen (hoặc rút nguồn) mới thoát được.
-5. **Chế độ huấn luyện** (`TRAINING ON`): thay vì cắt liên lạc, báo `[EVT] TRAINING: drone #3 would self-destruct now. Restarting in 3 s` rồi tự khởi động lại. Hộp đen vẫn được ghi.
 
 ---
 
@@ -264,7 +263,7 @@ BATTLE không gửi telemetry định kỳ, chỉ gửi sự kiện.
 | `AIM <dx> <dy>`, `LOCK`, `POWER RULE\|1..5\|NEXT` | Ngắm, khóa mục tiêu, chế độ bắn | BATTLE |
 | `MUTE ON\|OFF`, `ID <1..9>`, `MOUNT …`, `ROLE …`, `WIFI …`, `SERVER …` | Cấu hình, tự lưu flash | STANDBY |
 | `HOME`, `CALIB`, `BLACKBOX` | Đăng ký lab + mốc độ cao, hiệu chuẩn la bàn, hộp đen | STANDBY |
-| `TRAINING ON\|OFF`, `DASH ON\|OFF` | Chế độ huấn luyện, dòng dữ liệu dashboard | Mọi lúc |
+| `DASH ON\|OFF` | Dòng dữ liệu dashboard | Mọi lúc |
 | `I2CSCAN`, `I2CDUMP`, `INPUTS` | **Chỉ dùng lúc phát triển** (`ENABLE_DEV_TOOLS 0` trước khi nộp) | Mọi lúc |
 
 ---
@@ -291,7 +290,8 @@ Python + Tkinter + pyserial, chạy bằng Python trên Windows (cổng COM nằ
 ## 18. Kiến trúc, thời gian, thứ tự làm, nhật ký
 
 - Siêu vòng lặp không chặn, định thời bằng `HAL_GetTick()`. ISR chỉ ghi cờ hoặc dữ liệu (EXTI13 nút, EXTI11 IMU, USART1 RX/TX).
-- Module ngoài, tay cầm hay laptop không có thì bỏ qua, phần *(đề)* vẫn chạy đúng.
+- Module ngoài, tay cầm hay laptop không có thì bỏ qua, phần *(đề)* vẫn chạy đúng. Ở STANDBY, module chưa thấy được dò lại mỗi 2 s (cắm sau vẫn nhận). IR được dò bằng cách đổi điện trở kéo lên/xuống trên A0: chân thả nổi = không có module.
+- Bus I2C bị kẹt (SDA bị giữ thấp sau một lần timeout) thì tự gỡ: 9 xung SCL + STOP rồi khởi tạo lại I2C1.
 - **WiFi (giai đoạn 5, tùy chọn):** drone là TCP client tới dashboard trên laptop qua hotspot (điện thoại hoặc hotspot của laptop, 2.4 GHz, WPA2). Gửi đúng các dòng như UART, gom mỗi 500 ms. Kết nối lúc khởi động, mất thì chỉ thử lại ở STANDBY mỗi 30 s, vì lệnh WiFi chặn chương trình. UART luôn chạy song song.
 
 | Hạng mục | Giá trị |

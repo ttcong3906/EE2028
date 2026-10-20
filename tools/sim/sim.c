@@ -28,17 +28,24 @@ static uint8_t *rx_ptr = NULL;
 static jmp_buf jmp_end; static int standby_entered = 0, reset_called = 0;
 static uint8_t sim_fw  = 0x00;      /* 5-way pressed bits */
 static int sim_fiveway_present = 1;
+static int sim_stuck_next_read = 0;   /* next 5-way read times out and leaves SDA low */
 static uint8_t last_cmd[128];
 static int erase_count[2];          /* [0] page 254, [1] page 255 */
 
-void HAL_GPIO_Init(GPIO_TypeDef *p, GPIO_InitTypeDef *g) { (void)p; (void)g; }
-GPIO_PinState HAL_GPIO_ReadPin(GPIO_TypeDef *p, uint16_t pin) { (void)p; if (pin == GPIO_PIN_5) return ir_pin ? GPIO_PIN_SET : GPIO_PIN_RESET; return btn_level ? GPIO_PIN_SET : GPIO_PIN_RESET; }
+static int sim_ir_present = 1, sim_pc5_pull_up = 1;
+void HAL_GPIO_Init(GPIO_TypeDef *p, GPIO_InitTypeDef *g) { if (p == GPIOC && (g->Pin & GPIO_PIN_5)) sim_pc5_pull_up = g->Pull == GPIO_PULLUP; }
+int sim_i2c_busy = 0; static int sim_recover_pulses = 0;
+HAL_StatusTypeDef HAL_I2C_DeInit(I2C_HandleTypeDef *h) { (void)h; return HAL_OK; }
+void HAL_GPIO_WritePin(GPIO_TypeDef *p, uint16_t pin, GPIO_PinState st) { if (p == GPIOB && pin == GPIO_PIN_8 && st == GPIO_PIN_SET) { sim_recover_pulses++; sim_i2c_busy = 0; } }
+GPIO_PinState HAL_GPIO_ReadPin(GPIO_TypeDef *p, uint16_t pin) { if (p == GPIOB) return sim_i2c_busy && pin == GPIO_PIN_9 ? GPIO_PIN_RESET : GPIO_PIN_SET; if (pin == GPIO_PIN_5) { if (!sim_ir_present) return sim_pc5_pull_up ? GPIO_PIN_SET : GPIO_PIN_RESET; return ir_pin ? GPIO_PIN_SET : GPIO_PIN_RESET; } return btn_level ? GPIO_PIN_SET : GPIO_PIN_RESET; }
 HAL_StatusTypeDef HAL_I2C_Init(I2C_HandleTypeDef *h) { (void)h; return HAL_OK; }
-HAL_StatusTypeDef HAL_I2C_IsDeviceReady(I2C_HandleTypeDef *h, uint16_t a, uint32_t t, uint32_t to) { (void)h;(void)t;(void)to; a >>= 1; return ((a == 0x03 && sim_fiveway_present) || a == 0x70) ? HAL_OK : HAL_ERROR; }
-HAL_StatusTypeDef HAL_I2C_Master_Transmit(I2C_HandleTypeDef *h, uint16_t a, uint8_t *d, uint16_t n, uint32_t to) { (void)h;(void)to; a >>= 1; if (a == 0x03 && !sim_fiveway_present) return HAL_ERROR; if (n >= 1) last_cmd[a & 127] = d[0]; return (a == 0x03 || a == 0x70) ? HAL_OK : HAL_ERROR; }
+HAL_StatusTypeDef HAL_I2C_IsDeviceReady(I2C_HandleTypeDef *h, uint16_t a, uint32_t t, uint32_t to) { (void)h;(void)t;(void)to; a >>= 1; if (sim_i2c_busy) return HAL_ERROR; return ((a == 0x03 && sim_fiveway_present) || a == 0x70) ? HAL_OK : HAL_ERROR; }
+HAL_StatusTypeDef HAL_I2C_Master_Transmit(I2C_HandleTypeDef *h, uint16_t a, uint8_t *d, uint16_t n, uint32_t to) { (void)h;(void)to; a >>= 1; if (sim_i2c_busy) return HAL_ERROR; if (a == 0x03 && !sim_fiveway_present) return HAL_ERROR; if (n >= 1) last_cmd[a & 127] = d[0]; return (a == 0x03 || a == 0x70) ? HAL_OK : HAL_ERROR; }
 HAL_StatusTypeDef HAL_I2C_Master_Receive(I2C_HandleTypeDef *h, uint16_t a, uint8_t *d, uint16_t n, uint32_t to)
 {
     (void)h;(void)to; a >>= 1;
+    if (sim_i2c_busy) return HAL_ERROR;
+    if (sim_stuck_next_read && a == 0x03) { sim_stuck_next_read = 0; sim_i2c_busy = 1; return HAL_ERROR; }
     if (a == 0x03 && sim_fiveway_present) {
         if (last_cmd[a] == 0x00) { d[0] = 0x86; d[1] = 0x28; d[2] = 0x02; d[3] = 0; return HAL_OK; }
         memset(d, 0, n);
@@ -153,12 +160,13 @@ int main(void)
 {
     memset(sim_flash_page, 0xFF, sizeof sim_flash_page);
 
-    printf("== boot ==\n");
+    printf("== boot without IR ==\n");
+    sim_ir_present = 0;
     cfg_load();
     app_init(); service_isrs();
     CHECK(cfg.drone_id == 3 && cfg.role == ROLE_DRONE, "blank flash -> default Drone #3, role DRONE");
     CHECK(strstr(out, "=== Drone #3 online === mount: chip-up, silent: OFF") != NULL, "boot banner");
-    CHECK(strstr(out, "[EVT] System check: sensors OK, LED matrix OK, 5-way OK, IR on A0") != NULL, "system check line");
+    CHECK(strstr(out, "[EVT] System check: sensors OK, LED matrix OK, 5-way OK, IR NOT FOUND") != NULL, "system check: empty A0 -> IR NOT FOUND");
     CHECK(fiveway_addr == 0x03, "5-way detected by device ID");
     CHECK(strstr(out, "[EVT] Altitude zero at 1008.00 hPa") && strstr(out, "[EVT] Lab bearing registered:"), "altitude zero + lab bearing at boot");
     CHECK(strstr(out, "Entering STANDBY MODE") != NULL, "Entering STANDBY MODE");
@@ -168,8 +176,12 @@ int main(void)
     CHECK(strstr(out, "[HUD]") == NULL && strstr(out, "[MAP]") == NULL, "no dashboard lines before DASH ON");
 
     printf("== STANDBY scouting ==\n");
+    ir_pin = 0; run_ms(200); ir_pin = 1;
+    CHECK(strstr(out, "Obstacle") == NULL, "no IR events without the module");
+    sim_ir_present = 1;
     clear_out(); run_ms(3100);
     CHECK(strstr(out, "[EVT] Possible human habitat found: T 25.0 C, H 60 %RH") != NULL && habitat_count == 1, "habitat after 3 s of T 20-32 C and H 40-70 %RH");
+    CHECK(ir_ok && strstr(out, "[EVT] IR sensor connected"), "IR plugged in later is found in STANDBY (re-probe every 2 s)");
     run_ms(200);
     CHECK(memcmp(mx_shown, GL_HOUSE, 8) == 0, "matrix shows the house icon");
     clear_out(); s_hum = 85; run_ms(1000);
@@ -188,6 +200,16 @@ int main(void)
     CHECK(strstr(out, "[EVT] Lab re-registered: bearing") && strstr(out, "altitude zero at 1007.50 hPa"), "5-way centre held 1 s -> lab re-registered");
     CHECK(count("Lab re-registered") == 1, "hold action fires once");
     s_press = 1008.0f; altitude_zero(1008.0f);
+
+    printf("== I2C robustness ==\n");
+    clear_out(); sim_stuck_next_read = 1; run_ms(100);
+    CHECK(sim_recover_pulses > 0 && i2c_recoveries == 1 && !sim_i2c_busy, "5-way read times out with SDA held low -> bus recovered");
+    clear_out(); type("I2CSCAN\r");
+    CHECK(strstr(out, "[EVT] I2C bus: 0x03 0x70") && strstr(out, "[recoveries: 1]"), "after recovery both modules answer again");
+    sim_fiveway_present = 0; clear_out(); run_ms(600);
+    CHECK(fiveway_addr == 0 && strstr(out, "[EVT] 5-way switch lost"), "unplugged 5-way detected");
+    sim_fiveway_present = 1; clear_out(); run_ms(2100);
+    CHECK(fiveway_addr == 0x03 && strstr(out, "[EVT] 5-way switch connected at 0x03"), "re-plugged 5-way found again in STANDBY");
 
     printf("== configuration (flash) ==\n");
     clear_out(); type("ID 5\r");

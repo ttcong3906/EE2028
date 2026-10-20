@@ -133,3 +133,13 @@ HAL_StatusTypeDef HAL_FLASH_Lock(void);
 HAL_StatusTypeDef HAL_FLASHEx_Erase(FLASH_EraseInitTypeDef *e, uint32_t *err);
 HAL_StatusTypeDef HAL_FLASH_Program(uint32_t type, uint32_t addr, uint64_t data);
 void NVIC_SystemReset(void);
+
+/* --- additions for I2C bus recovery --- */
+#define RESET 0
+#define I2C_FLAG_BUSY 0x8000u
+extern int sim_i2c_busy;
+#define __HAL_I2C_GET_FLAG(h, f) (sim_i2c_busy ? 1 : 0)
+enum { GPIO_MODE_OUTPUT_OD = 200 };
+HAL_StatusTypeDef HAL_I2C_DeInit(I2C_HandleTypeDef *h);
+void HAL_GPIO_WritePin(GPIO_TypeDef *p, uint16_t pin, GPIO_PinState s);
+enum { GPIO_PULLDOWN = 300 };

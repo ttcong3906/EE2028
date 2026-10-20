@@ -116,6 +116,9 @@ extern uint8_t SENSOR_IO_Read(uint8_t Addr, uint8_t Reg);
 #define FIVEWAY_REPEAT_DELAY_MS 400U
 #define FIVEWAY_REPEAT_MS       150U
 #define FIVEWAY_HOLD_MS         1000U  /* centre held: lab register / weapon power */
+#define I2C_TIMEOUT_MS          25U    /* Grove I2C transfers (5-way may stretch the clock) */
+#define MODULE_BOOT_MS          150U   /* let the 5-way's own MCU start before probing */
+#define MODULE_REPROBE_MS       2000U  /* STANDBY: look again for unplugged modules */
 #define COMPASS_PERIOD_MS       100U
 #define CALIB_MS                10000U
 #define IR_POLL_MS              20U
@@ -134,7 +137,6 @@ extern uint8_t SENSOR_IO_Read(uint8_t Addr, uint8_t Reg);
 #define BOOT_ID_MS              1000U
 #define BEAM_FRAME_MS           50U
 #define BLAST_FLASH_MS          150U
-#define TRAINING_RESTART_MS     3000U
 #define HUD_PERIOD_MS           250U   /* dashboard state line                 */
 #define MAP_MIN_PERIOD_MS       200U   /* dashboard map line, at most 5/s      */
 #define CTL_TILT_POLL_MS        50U
@@ -200,7 +202,6 @@ static uint32_t    boot_tick = 0;
 
 static uint32_t t_sensor = 0, t_led = 0, t_flip_poll = 0, t_attack_start = 0, t_attack_msg = 0;
 static bool     led_on = false;
-static bool     training = false;        /* UART TRAINING command */
 static bool     dash_on = false;         /* UART DASH command: [HUD]/[MAP] lines */
 static uint32_t warn_mask = 0;
 
@@ -487,18 +488,75 @@ static void I2C1_Init(void)
     i2c1_ready = (HAL_I2C_Init(&hi2c1) == HAL_OK);
 }
 
+/* Short busy wait (roughly microseconds at 4 MHz), no SysTick needed. */
+static void i2c_gap(uint32_t n)
+{
+    for (volatile uint32_t i = 0; i < n; i++) { }
+}
+
+/* A slave left half-way through a transfer (e.g. after a timeout) can hold
+ * SDA low forever, and then every device on the bus stops answering. */
+static uint32_t i2c_recoveries = 0;
+
+static bool i2c1_bus_stuck(void)
+{
+    return __HAL_I2C_GET_FLAG(&hi2c1, I2C_FLAG_BUSY) != RESET ||
+           HAL_GPIO_ReadPin(GPIOB, GPIO_PIN_9) == GPIO_PIN_RESET;     /* SDA held low */
+}
+
+/* Bus recovery: up to 9 clock pulses until the slave releases SDA, then a
+ * STOP condition, then a fresh I2C1 init. */
+static void i2c1_recover(void)
+{
+    HAL_I2C_DeInit(&hi2c1);
+    GPIO_InitTypeDef g = {0};
+    g.Pin   = GPIO_PIN_8 | GPIO_PIN_9;
+    g.Mode  = GPIO_MODE_OUTPUT_OD;
+    g.Pull  = GPIO_PULLUP;
+    g.Speed = GPIO_SPEED_FREQ_LOW;
+    HAL_GPIO_WritePin(GPIOB, GPIO_PIN_8 | GPIO_PIN_9, GPIO_PIN_SET);
+    HAL_GPIO_Init(GPIOB, &g);
+    i2c_gap(20);
+    for (int i = 0; i < 9 && HAL_GPIO_ReadPin(GPIOB, GPIO_PIN_9) == GPIO_PIN_RESET; i++) {
+        HAL_GPIO_WritePin(GPIOB, GPIO_PIN_8, GPIO_PIN_RESET); i2c_gap(10);
+        HAL_GPIO_WritePin(GPIOB, GPIO_PIN_8, GPIO_PIN_SET);   i2c_gap(10);
+    }
+    HAL_GPIO_WritePin(GPIOB, GPIO_PIN_9, GPIO_PIN_RESET); i2c_gap(10);   /* STOP: SDA rises while SCL high */
+    HAL_GPIO_WritePin(GPIOB, GPIO_PIN_9, GPIO_PIN_SET);   i2c_gap(10);
+    i2c_recoveries++;
+    I2C1_Init();
+}
+
+static bool i2c1_check(bool ok)
+{
+    if (!ok && i2c1_bus_stuck()) i2c1_recover();
+    return ok;
+}
+
 static bool i2c1_present(uint8_t addr7)
 {
     if (!i2c1_ready) return false;
-    return HAL_I2C_IsDeviceReady(&hi2c1, (uint16_t)(addr7 << 1), 2, 10) == HAL_OK;
+    return i2c1_check(HAL_I2C_IsDeviceReady(&hi2c1, (uint16_t)(addr7 << 1), 2, I2C_TIMEOUT_MS) == HAL_OK);
 }
 
-/* Write one command byte, then read n bytes back (Seeed register protocol). */
+static bool i2c1_write(uint8_t addr7, uint8_t *data, uint16_t n)
+{
+    if (!i2c1_ready) return false;
+    return i2c1_check(HAL_I2C_Master_Transmit(&hi2c1, (uint16_t)(addr7 << 1), data, n, I2C_TIMEOUT_MS) == HAL_OK);
+}
+
+/* Write one command byte, then read n bytes back (Seeed register protocol).
+ * The 5-way's own MCU needs a moment to prepare the answer and may stretch
+ * the clock, so wait a little between the two and allow a generous timeout. */
 static bool i2c1_cmd_read(uint8_t addr7, uint8_t cmd, uint8_t *rx, uint16_t n)
 {
     if (!i2c1_ready) return false;
-    if (HAL_I2C_Master_Transmit(&hi2c1, (uint16_t)(addr7 << 1), &cmd, 1, 10) != HAL_OK) return false;
-    return HAL_I2C_Master_Receive(&hi2c1, (uint16_t)(addr7 << 1), rx, n, 10) == HAL_OK;
+    bool ok = HAL_I2C_Master_Transmit(&hi2c1, (uint16_t)(addr7 << 1), &cmd, 1, I2C_TIMEOUT_MS) == HAL_OK;
+    if (ok) {
+        i2c_gap(200);
+        ok = HAL_I2C_Master_Receive(&hi2c1, (uint16_t)(addr7 << 1), rx, n, I2C_TIMEOUT_MS) == HAL_OK;
+    }
+    return i2c1_check(ok);
 }
 
 /* ============================================================================
@@ -551,9 +609,9 @@ static void mx_init(void)
     mx_ok = i2c1_present(MATRIX_I2C_ADDR);
     if (!mx_ok) return;
     uint8_t c;
-    c = 0x21; HAL_I2C_Master_Transmit(&hi2c1, MATRIX_I2C_ADDR << 1, &c, 1, 10); /* osc on   */
-    c = 0xE8; HAL_I2C_Master_Transmit(&hi2c1, MATRIX_I2C_ADDR << 1, &c, 1, 10); /* bright 8 */
-    c = 0x81; HAL_I2C_Master_Transmit(&hi2c1, MATRIX_I2C_ADDR << 1, &c, 1, 10); /* disp on  */
+    c = 0x21; i2c1_write(MATRIX_I2C_ADDR, &c, 1);  /* oscillator on */
+    c = 0xE8; i2c1_write(MATRIX_I2C_ADDR, &c, 1);  /* brightness 8  */
+    c = 0x81; i2c1_write(MATRIX_I2C_ADDR, &c, 1);  /* display on    */
     mx_shown_valid = false;
 #endif
 }
@@ -569,7 +627,7 @@ static void mx_show(const uint8_t rows[8])
         buf[1 + 2 * r] = mx_map(rows[r]);
         buf[2 + 2 * r] = 0x00;
     }
-    HAL_I2C_Master_Transmit(&hi2c1, MATRIX_I2C_ADDR << 1, buf, sizeof(buf), 20);
+    if (!i2c1_write(MATRIX_I2C_ADDR, buf, sizeof(buf))) return;   /* retry next frame */
     memcpy(mx_shown, rows, 8);
     mx_shown_valid = true;
 #else
@@ -895,20 +953,43 @@ static int turn_to_lab(void)
 /* ============================================================================
  * 9. GROVE IR REFLECTIVE SENSOR (A0 = PC5, digital) AND 5-WAY SWITCH (I2C)
  * ==========================================================================*/
+static bool    ir_ok = false;                /* module found on A0 */
 static bool    ir_detect = false;
 static uint8_t ir_same = 0;
 static GPIO_PinState ir_last_raw = GPIO_PIN_SET;
 static uint32_t t_ir = 0, t_ir_evt = 0;
 
+static void ir_pull(uint32_t pull)
+{
+    GPIO_InitTypeDef g = {0};
+    g.Pin  = GPIO_PIN_5;               /* PC5 = Grove A0 */
+    g.Mode = GPIO_MODE_INPUT;
+    g.Pull = pull;
+    HAL_GPIO_Init(GPIOC, &g);
+    for (volatile uint32_t i = 0; i < 200U; i++) { }   /* let the pin settle */
+}
+
+/* Presence test: the module's comparator drives the pin, so it reads the same
+ * level with the internal pull-up and pull-down. A floating (empty) pin
+ * follows the pull resistor instead. */
+static bool ir_probe(void)
+{
+#if ENABLE_IR
+    ir_pull(GPIO_PULLDOWN);
+    GPIO_PinState lo = HAL_GPIO_ReadPin(GPIOC, GPIO_PIN_5);
+    ir_pull(GPIO_PULLUP);
+    GPIO_PinState hi = HAL_GPIO_ReadPin(GPIOC, GPIO_PIN_5);
+    return lo == hi;                   /* pull-up stays on: unplugged reads "clear" */
+#else
+    return false;
+#endif
+}
+
 static void ir_init(void)
 {
 #if ENABLE_IR
     __HAL_RCC_GPIOC_CLK_ENABLE();
-    GPIO_InitTypeDef g = {0};
-    g.Pin  = GPIO_PIN_5;               /* PC5 = Grove A0 */
-    g.Mode = GPIO_MODE_INPUT;
-    g.Pull = GPIO_PULLUP;              /* unplugged = clear */
-    HAL_GPIO_Init(GPIOC, &g);
+    ir_ok = ir_probe();
 #endif
 }
 
@@ -921,11 +1002,16 @@ static bool     fw_center_held = false;              /* hold action already done
 static void fiveway_probe(void)
 {
 #if ENABLE_FIVEWAY
-    for (uint8_t a = 0x03; a <= 0x08; a++) {
-        uint8_t id[4];
-        if (!i2c1_cmd_read(a, MS_CMD_GET_DEV_ID, id, 4)) continue;
-        uint16_t vid = (uint16_t)(id[0] | (id[1] << 8)), pid = (uint16_t)(id[2] | (id[3] << 8));
-        if (vid == MS_VID && pid == MS_PID_5WAY) { fiveway_addr = a; break; }
+    uint32_t up = HAL_GetTick();                      /* module MCU boot time after power-on */
+    if (up < MODULE_BOOT_MS) HAL_Delay(MODULE_BOOT_MS - up);
+    for (uint8_t a = 0x03; a <= 0x08 && !fiveway_addr; a++) {
+        if (!i2c1_present(a)) continue;               /* quick ACK test first */
+        for (int tries = 0; tries < 3; tries++) {     /* the Seeed library also retries */
+            uint8_t id[4];
+            if (!i2c1_cmd_read(a, MS_CMD_GET_DEV_ID, id, 4)) continue;
+            uint16_t vid = (uint16_t)(id[0] | (id[1] << 8)), pid = (uint16_t)(id[2] | (id[3] << 8));
+            if (vid == MS_VID && pid == MS_PID_5WAY) { fiveway_addr = a; break; }
+        }
     }
 #endif
 }
@@ -1342,10 +1428,10 @@ static void send_stat(void)
                 weapon_sel ? "SELECT" : "RULE", p,
                 (unsigned long)shots_fired, (unsigned long)zombies_down,
                 altitude_m(), heading_deg, cardinal(heading_deg));
-    uart_printf("[STAT] IR: %s, HABITAT: %s, MUTE: %s, MOUNT: %s, TRAINING: %s, DASH: %s, LED MATRIX: %s, 5-WAY: %s\r\n",
-                ir_detect ? "DETECT" : "CLEAR", habitat_found ? "FOUND" : "SEARCHING",
+    uart_printf("[STAT] IR: %s, HABITAT: %s, MUTE: %s, MOUNT: %s, DASH: %s, LED MATRIX: %s, 5-WAY: %s\r\n",
+                !ir_ok ? "missing" : (ir_detect ? "DETECT" : "CLEAR"), habitat_found ? "FOUND" : "SEARCHING",
                 cfg.muted ? "ON" : "OFF", cfg.mount_down ? "Z+ down" : "chip-up",
-                training ? "ON" : "OFF", dash_on ? "ON" : "OFF",
+                dash_on ? "ON" : "OFF",
                 mx_ok ? "OK" : "missing", fiveway_addr ? "OK" : "missing");
 }
 
@@ -1426,24 +1512,15 @@ static void terminate(void)
     state = ST_TERMINATED;
     bool saved = bb_flash_save();
     bz_stop();
-    if (training) {
-        uart_printf("[EVT] TRAINING: drone #%d would self-destruct now. Black box %s. Restarting in 3 s\r\n",
-                    cfg.drone_id, saved ? "saved" : "NOT saved");
-    } else {
-        uart_printf("[EVT] Drone #%d: no rescue. Black box %s. Self-destructing. Cutting all communication.\r\n",
-                    cfg.drone_id, saved ? "saved" : "NOT saved");
-    }
+    uart_printf("[EVT] Drone #%d: no rescue. Black box %s. Self-destructing. Cutting all communication.\r\n",
+                cfg.drone_id, saved ? "saved" : "NOT saved");
     led_set(false);
     matrix_render();
     bz_play(SND(SND_GAMEOVER), false);
 
     uint32_t t0 = HAL_GetTick();
-    while (!elapsed(t0, training ? TRAINING_RESTART_MS : 2500U)) bz_update();
+    while (!elapsed(t0, 2500U)) bz_update();        /* let the last message and tune finish */
     uart_flush(500);
-
-    if (training) {
-        NVIC_SystemReset();
-    }
 
     /* Cut all communication (spec) */
     uart_enabled = false;
@@ -1632,7 +1709,7 @@ static void on_ir(bool detected)
 static void ir_tick(void)
 {
 #if ENABLE_IR
-    if (!elapsed(t_ir, IR_POLL_MS)) return;
+    if (!ir_ok || !elapsed(t_ir, IR_POLL_MS)) return;
     t_ir = HAL_GetTick();
     GPIO_PinState raw = HAL_GPIO_ReadPin(GPIOC, GPIO_PIN_5);
     if (raw == ir_last_raw) { if (ir_same < 255) ir_same++; }
@@ -1672,7 +1749,17 @@ static void fiveway_tick(void)
     uint8_t b;
     if (!fiveway_addr || !elapsed(t_fw, FIVEWAY_POLL_MS)) return;
     t_fw = HAL_GetTick();
-    if (!fiveway_read(&b)) return;
+    static uint8_t fw_fail = 0;
+    if (!fiveway_read(&b)) {
+        if (++fw_fail >= 10) {                       /* ~0.3 s of silence: unplugged */
+            fw_fail = 0;
+            fiveway_addr = 0;
+            fw_bits = fw_prev = 0;
+            uart_write("[EVT] 5-way switch lost (no answer on I2C)\r\n");
+        }
+        return;
+    }
+    fw_fail = 0;
     fw_bits = b;
     const uint8_t C = (uint8_t)(1U << FIVEWAY_IDX_CENTER);
     uint8_t pressed  = (uint8_t)(fw_bits & ~fw_prev);
@@ -1935,7 +2022,7 @@ static void ctl_cmd(const char *verb, const char *arg1)
 static void cmd_help(void)
 {
     uart_write("[CMD] Commands:\r\n"
-               "[CMD]   HELP | STATUS | THRESH | SET <T|P|H|A|G|M>_<LOW|HIGH> <v> | TRAINING ON|OFF | DASH ON|OFF\r\n"
+               "[CMD]   HELP | STATUS | THRESH | SET <T|P|H|A|G|M>_<LOW|HIGH> <v> | DASH ON|OFF\r\n"
                "[CMD]   MODE STANDBY|BATTLE | CHARGE | RESCUE\r\n"
                "[CMD]   battle:  AIM <dx> <dy> | LOCK | POWER RULE|1..5|NEXT\r\n"
                "[CMD]   standby: HOME | CALIB | BLACKBOX | ID <1..9> | MOUNT CHIPUP|ZDOWN | MUTE ON|OFF | ROLE DRONE|CONTROLLER\r\n"
@@ -2015,8 +2102,12 @@ static void bb_print(const bb_image_t *img, const char *source)
 #if ENABLE_DEV_TOOLS
 static void i2c_scan(void)
 {
-    char buf[160] = "[EVT] I2C bus:";
+    char buf[200] = "[EVT] I2C bus:";
     int found = 0;
+    if (i2c1_ready && i2c1_bus_stuck()) {
+        i2c1_recover();
+        strcat(buf, " (was stuck, recovered)");
+    }
     if (i2c1_ready) {
         for (uint8_t a = 0x03; a <= 0x77; a++) {
             if (HAL_I2C_IsDeviceReady(&hi2c1, (uint16_t)(a << 1), 1, 5) == HAL_OK) {
@@ -2027,7 +2118,17 @@ static void i2c_scan(void)
             }
         }
     }
-    if (!found) strcat(buf, " (no devices)");
+    if (!found) {
+        char t[64];
+        snprintf(t, sizeof(t), " (no devices; SCL %d SDA %d, 1 = idle)",
+                 (int)HAL_GPIO_ReadPin(GPIOB, GPIO_PIN_8), (int)HAL_GPIO_ReadPin(GPIOB, GPIO_PIN_9));
+        strcat(buf, t);
+    }
+    if (i2c_recoveries) {
+        char t[32];
+        snprintf(t, sizeof(t), " [recoveries: %lu]", (unsigned long)i2c_recoveries);
+        strcat(buf, t);
+    }
     strcat(buf, "\r\n");
     uart_write(buf);
 }
@@ -2124,11 +2225,10 @@ static void cmd_exec(char *line)
         return;
     }
 
-    if (!strcmp(verb, "TRAINING") || !strcmp(verb, "DASH")) {
+    if (!strcmp(verb, "DASH")) {
         bool on;
         if (!parse_on_off(verb, arg1, &on)) return;
-        if (verb[0] == 'T') training = on;
-        else { dash_on = on; t_hud = HAL_GetTick() - HUD_PERIOD_MS; map_sent_valid = false; }
+        dash_on = on; t_hud = HAL_GetTick() - HUD_PERIOD_MS; map_sent_valid = false;
         uart_printf("[CMD] OK %s %s\r\n", verb, on ? "ON" : "OFF");
         return;
     }
@@ -2194,7 +2294,7 @@ static void cmd_exec(char *line)
         bool fok = fiveway_read(&f);
         uart_printf("[CMD] 5-WAY@0x%02X %s pressed idx0..4 = %d%d%d%d%d | IR pin %d (%s)\r\n",
                     fiveway_addr, fok ? "ok" : "--", f & 1, (f >> 1) & 1, (f >> 2) & 1, (f >> 3) & 1, (f >> 4) & 1,
-                    (int)HAL_GPIO_ReadPin(GPIOC, GPIO_PIN_5), ir_detect ? "DETECT" : "CLEAR");
+                    (int)HAL_GPIO_ReadPin(GPIOC, GPIO_PIN_5), !ir_ok ? "missing" : (ir_detect ? "DETECT" : "CLEAR"));
         return;
     }
     if (!strcmp(verb, "I2CDUMP")) {
@@ -2312,8 +2412,9 @@ static void app_init(void)
 
     uart_printf("\r\n=== Drone #%d online === mount: %s, silent: %s\r\n", cfg.drone_id,
                 cfg.mount_down ? "Z+ down" : "chip-up", cfg.muted ? "ON" : "OFF");
-    uart_printf("[EVT] System check: sensors %s, LED matrix %s, 5-way %s, IR on A0. Type HELP for commands.\r\n",
-                sensors_ok ? "OK" : "FAIL", mx_ok ? "OK" : "NOT FOUND", fiveway_addr ? "OK" : "NOT FOUND");
+    uart_printf("[EVT] System check: sensors %s, LED matrix %s, 5-way %s, IR %s. Type HELP for commands.\r\n",
+                sensors_ok ? "OK" : "FAIL", mx_ok ? "OK" : "NOT FOUND", fiveway_addr ? "OK" : "NOT FOUND",
+                ir_ok ? "OK" : "NOT FOUND");
 #if ENABLE_DEV_TOOLS
     i2c_scan();
 #endif
@@ -2354,6 +2455,24 @@ static void app_loop(void)
     while (doubles--) action_double();
 
     fiveway_tick();
+
+    /* Modules plugged in after power-on (or after a glitch) are found again. */
+    static uint32_t t_reprobe = 0;
+    if (state == ST_STANDBY && elapsed(t_reprobe, MODULE_REPROBE_MS)) {
+        t_reprobe = HAL_GetTick();
+        if (!mx_ok) {
+            mx_init();
+            if (mx_ok) uart_write("[EVT] LED matrix connected\r\n");
+        }
+        if (ENABLE_IR && !ir_ok) {
+            ir_ok = ir_probe();
+            if (ir_ok) { ir_same = 0; uart_write("[EVT] IR sensor connected\r\n"); }
+        }
+        if (!fiveway_addr && ENABLE_FIVEWAY) {
+            fiveway_probe();
+            if (fiveway_addr) uart_printf("[EVT] 5-way switch connected at 0x%02X\r\n", fiveway_addr);
+        }
+    }
 
     switch (state) {
         case ST_STANDBY:  standby_tick();  break;
