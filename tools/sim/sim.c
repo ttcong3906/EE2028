@@ -47,7 +47,7 @@ HAL_StatusTypeDef HAL_I2C_Master_Receive(I2C_HandleTypeDef *h, uint16_t a, uint8
     if (sim_i2c_busy) return HAL_ERROR;
     if (sim_stuck_next_read && a == 0x03) { sim_stuck_next_read = 0; sim_i2c_busy = 1; return HAL_ERROR; }
     if (a == 0x03 && sim_fiveway_present) {
-        if (last_cmd[a] == 0x00) { d[0] = 0x86; d[1] = 0x28; d[2] = 0x02; d[3] = 0; return HAL_OK; }
+        if (last_cmd[a] == 0x00) { d[0] = 0x02; d[1] = 0x00; d[2] = 0x86; d[3] = 0x28;   /* real module: (VID<<16)|PID, little-endian */ return HAL_OK; }
         memset(d, 0, n);
         for (int i = 0; i < 5 && 4 + i < n; i++) d[4 + i] = (sim_fw & (1u << i)) ? 0x00 : 0x01;   /* active = raw 0 */
         return HAL_OK;
