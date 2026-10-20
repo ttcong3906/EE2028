@@ -37,7 +37,7 @@ extern PERIPH sim_i2c1, sim_usart1, sim_tim3;
 #define I2C1 (&sim_i2c1)
 #define USART1 (&sim_usart1)
 #define TIM3 (&sim_tim3)
-typedef struct { PERIPH *Instance; struct { uint32_t Timing, OwnAddress1, AddressingMode, DualAddressMode, OwnAddress2, GeneralCallMode, NoStretchMode; } Init; } I2C_HandleTypeDef;
+typedef struct { PERIPH *Instance; struct { uint32_t Timing, OwnAddress1, AddressingMode, DualAddressMode, OwnAddress2, GeneralCallMode, NoStretchMode; } Init; uint32_t ErrorCode; } I2C_HandleTypeDef;
 enum { I2C_ADDRESSINGMODE_7BIT=1, I2C_DUALADDRESS_DISABLE, I2C_GENERALCALL_DISABLE, I2C_NOSTRETCH_DISABLE };
 HAL_StatusTypeDef HAL_I2C_Init(I2C_HandleTypeDef *h);
 HAL_StatusTypeDef HAL_I2C_IsDeviceReady(I2C_HandleTypeDef *h, uint16_t a, uint32_t t, uint32_t to);
@@ -143,3 +143,8 @@ enum { GPIO_MODE_OUTPUT_OD = 200 };
 HAL_StatusTypeDef HAL_I2C_DeInit(I2C_HandleTypeDef *h);
 void HAL_GPIO_WritePin(GPIO_TypeDef *p, uint16_t pin, GPIO_PinState s);
 enum { GPIO_PULLDOWN = 300 };
+#define HAL_I2C_ERROR_BERR 0x01u
+#define HAL_I2C_ERROR_ARLO 0x02u
+#define HAL_I2C_ERROR_AF 0x04u
+#define HAL_I2C_ERROR_OVR 0x08u
+#define HAL_I2C_ERROR_TIMEOUT 0x20u

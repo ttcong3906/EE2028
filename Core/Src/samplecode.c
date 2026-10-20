@@ -566,15 +566,35 @@ static bool i2c1_write(uint8_t addr7, uint8_t *data, uint16_t n)
 /* Write one command byte, then read n bytes back (Seeed register protocol).
  * The 5-way's own MCU needs a moment to prepare the answer and may stretch
  * the clock, so wait a little between the two and allow a generous timeout. */
+/* What went wrong in the last failed command read (for the diagnostics). */
+static char     i2c_diag[96] = "";
+static uint32_t i2c_cmd_timeout = I2C_TIMEOUT_MS;
+
+static const char *i2c_err_name(uint32_t e)
+{
+    if (e & HAL_I2C_ERROR_AF)      return "NACK";
+    if (e & HAL_I2C_ERROR_TIMEOUT) return "TIMEOUT";
+    if (e & HAL_I2C_ERROR_BERR)    return "BUS ERROR";
+    if (e & HAL_I2C_ERROR_ARLO)    return "ARB LOST";
+    if (e & HAL_I2C_ERROR_OVR)     return "OVERRUN";
+    return e ? "ERROR" : "BUSY";
+}
+
 static bool i2c1_cmd_read(uint8_t addr7, uint8_t cmd, uint8_t *rx, uint16_t n)
 {
     for (int k = 0; i2c1_ready; k++) {
-        bool ok = HAL_I2C_Master_Transmit(&hi2c1, (uint16_t)(addr7 << 1), &cmd, 1, I2C_TIMEOUT_MS) == HAL_OK;
+        uint32_t t0 = HAL_GetTick();
+        const char *phase = "write cmd";
+        bool ok = HAL_I2C_Master_Transmit(&hi2c1, (uint16_t)(addr7 << 1), &cmd, 1, i2c_cmd_timeout) == HAL_OK;
         if (ok) {
             i2c_gap(200);
-            ok = HAL_I2C_Master_Receive(&hi2c1, (uint16_t)(addr7 << 1), rx, n, I2C_TIMEOUT_MS) == HAL_OK;
+            phase = "read data";
+            ok = HAL_I2C_Master_Receive(&hi2c1, (uint16_t)(addr7 << 1), rx, n, i2c_cmd_timeout) == HAL_OK;
         }
         if (ok) return true;
+        snprintf(i2c_diag, sizeof(i2c_diag), "0x%02X cmd 0x%02X: %s failed (%s) after %lu ms, SCL %d SDA %d",
+                 addr7, cmd, phase, i2c_err_name(hi2c1.ErrorCode), (unsigned long)(HAL_GetTick() - t0),
+                 (int)HAL_GPIO_ReadPin(GPIOB, GPIO_PIN_8), (int)HAL_GPIO_ReadPin(GPIOB, GPIO_PIN_9));
         if (!i2c1_retry_after(ok, k)) return false;
     }
     return false;
@@ -1020,16 +1040,22 @@ static uint32_t t_fw = 0, fw_hold_t0 = 0, fw_rep_t = 0;
 static uint32_t fw_center_t0 = 0;
 static bool     fw_center_held = false;              /* hold action already done */
 
+static uint8_t fiveway_acked = 0;                    /* address that ACKed but gave no valid ID */
+
 static void fiveway_probe(void)
 {
 #if ENABLE_FIVEWAY
+    fiveway_acked = 0;
     for (uint8_t a = 0x03; a <= 0x08 && !fiveway_addr; a++) {
         if (!i2c1_present(a)) continue;               /* quick ACK test first */
+        fiveway_acked = a;
         for (int tries = 0; tries < 3; tries++) {     /* the Seeed library also retries */
             uint8_t id[4];
             if (!i2c1_cmd_read(a, MS_CMD_GET_DEV_ID, id, 4)) continue;
             uint16_t vid = (uint16_t)(id[0] | (id[1] << 8)), pid = (uint16_t)(id[2] | (id[3] << 8));
             if (vid == MS_VID && pid == MS_PID_5WAY) { fiveway_addr = a; break; }
+            snprintf(i2c_diag, sizeof(i2c_diag), "0x%02X ID read gave %02X %02X %02X %02X (want 86 28 02 00)",
+                     a, id[0], id[1], id[2], id[3]);
             uint8_t junk;                              /* Seeed library: read 1 byte to re-align */
             HAL_I2C_Master_Receive(&hi2c1, (uint16_t)(a << 1), &junk, 1, I2C_TIMEOUT_MS);
         }
@@ -2158,7 +2184,10 @@ static void i2c_dump(uint8_t addr, uint8_t cmd, uint8_t n)
 {
     uint8_t rx[32] = {0};
     if (n > sizeof(rx)) n = sizeof(rx);
-    if (!i2c1_cmd_read(addr, cmd, rx, n)) { uart_printf("[CMD] ERR no answer from 0x%02X\r\n", addr); return; }
+    i2c_cmd_timeout = 200;                               /* patient, for diagnosis */
+    bool ok = i2c1_cmd_read(addr, cmd, rx, n);
+    i2c_cmd_timeout = I2C_TIMEOUT_MS;
+    if (!ok) { uart_printf("[CMD] ERR %s\r\n", i2c_diag); return; }
     char buf[140];
     int k = snprintf(buf, sizeof(buf), "[CMD] 0x%02X cmd 0x%02X ->", addr, cmd);
     for (uint8_t i = 0; i < n && k < (int)sizeof(buf) - 6; i++) k += snprintf(buf + k, sizeof(buf) - (size_t)k, " %02X", rx[i]);
@@ -2447,6 +2476,9 @@ static void app_init(void)
 
     uart_printf("\r\n=== Drone #%d online === mount: %s, silent: %s\r\n", cfg.drone_id,
                 cfg.mount_down ? "Z+ down" : "chip-up", cfg.muted ? "ON" : "OFF");
+    if (!fiveway_addr && fiveway_acked)
+        uart_printf("[EVT] 5-way diag: device at 0x%02X answers its address but not the ID read. Last: %s\r\n",
+                    fiveway_acked, i2c_diag);
     uart_printf("[EVT] System check: sensors %s, LED matrix %s, 5-way %s, IR %s. Type HELP for commands.\r\n",
                 sensors_ok ? "OK" : "FAIL", mx_ok ? "OK" : "NOT FOUND", fiveway_addr ? "OK" : "NOT FOUND",
                 ir_ok ? "OK" : "NOT FOUND");
