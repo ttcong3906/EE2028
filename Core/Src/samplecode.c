@@ -2074,7 +2074,7 @@ static void cmd_help(void)
                "[CMD]   battle:  AIM <dx> <dy> | LOCK | POWER RULE|1..5|NEXT\r\n"
                "[CMD]   standby: HOME | CALIB | BLACKBOX | ID <1..9> | MOUNT CHIPUP|ZDOWN | MUTE ON|OFF | ROLE DRONE|CONTROLLER\r\n"
 #if ENABLE_DEV_TOOLS
-               "[CMD]   dev: I2CSCAN | I2CDUMP <addr> <cmd> <n> | I2CSPEED 100|50|25 | INPUTS\r\n"
+               "[CMD]   dev: I2CSCAN | I2CDUMP <addr> <cmd> <n> | I2CSPEED 100|50|25 | INPUTS | MAG\r\n"
 #endif
                );
 }
@@ -2348,6 +2348,16 @@ static void cmd_exec(char *line)
         I2C1_Init();
         mx_ok = false; fiveway_addr = 0; mx_shown_valid = false;     /* re-probed within 2 s */
         uart_printf("[CMD] OK I2C at %d kHz, modules will be re-probed\r\n", k);
+        return;
+    }
+    if (!strcmp(verb, "MAG")) {                          /* compass debugging */
+        int16_t m[3] = {0};
+        BSP_MAGNETO_GetXYZ(m);
+        compass_update(true);
+        uart_printf("[CMD] MAG raw X %.1f Y %.1f Z %.1f uT (|M| %.1f) | offset X %.1f Y %.1f uT | heading %03d %s, lab %03d, turn %+d\r\n",
+                    m[0] / 10.0f, m[1] / 10.0f, m[2] / 10.0f,
+                    sqrtf((float)m[0] * m[0] + (float)m[1] * m[1] + (float)m[2] * m[2]) / 10.0f,
+                    mag_off_x / 10.0f, mag_off_y / 10.0f, heading_deg, cardinal(heading_deg), lab_bearing, turn_to_lab());
         return;
     }
     if (!strcmp(verb, "INPUTS")) {
