@@ -469,8 +469,10 @@ static bool i2c1_ready = false;
 #define I2C_TIMING_100K 0x00420F13UL
 #define I2C_TIMING_50K  0x10420F13UL   /* same with PRESC = 1: everything x2 */
 #define I2C_TIMING_25K  0x30420F13UL   /* PRESC = 3: x4 */
-static uint32_t i2c_timing = I2C_TIMING_100K;
-static int      i2c_khz = 100;
+/* 25 kHz for the whole bus: the 5-way's MCU loses track at 50/100 kHz (tested
+ * on the real module: only 25 kHz returned its ID). The matrix is fine with it. */
+static uint32_t i2c_timing = I2C_TIMING_25K;
+static int      i2c_khz = 25;
 
 static void I2C1_Init(void)
 {
@@ -1064,23 +1066,42 @@ static bool     fw_center_held = false;              /* hold action already done
 static uint8_t fiveway_acked = 0;                    /* address that ACKs (5-way candidate) */
 static bool    fiveway_failed = false;               /* ACKs but no combination gave the ID */
 
+/* The module's reply buffer can slip after a bad transfer: the ID then comes
+ * back rotated (e.g. 02 00 86 28). Reading single bytes re-aligns it, which
+ * is what the Seeed library does too. */
+static void fiveway_realign(uint8_t a)
+{
+    uint8_t junk;
+    HAL_I2C_Master_Receive(&hi2c1, (uint16_t)(a << 1), &junk, 1, I2C_TIMEOUT_MS);
+}
+
 static bool fiveway_try_id(uint8_t a, bool verbose)
 {
-    for (int tries = 0; tries < 2; tries++) {         /* the Seeed library also retries */
+    static const uint8_t want[4] = { MS_VID & 0xFF, MS_VID >> 8, MS_PID_5WAY & 0xFF, MS_PID_5WAY >> 8 };
+    for (int tries = 0; tries < 6; tries++) {
         uint8_t id[4] = {0};
         bool ok = i2c1_cmd_read(a, MS_CMD_GET_DEV_ID, id, 4);
-        uint16_t vid = (uint16_t)(id[0] | (id[1] << 8)), pid = (uint16_t)(id[2] | (id[3] << 8));
-        if (ok && vid == MS_VID && pid == MS_PID_5WAY) {
+        if (ok && memcmp(id, want, 4) == 0) {
             if (verbose) uart_printf("[CMD]   %3d kHz, %-18s: OK (ID %02X %02X %02X %02X)\r\n",
                                      i2c_khz, ms_method_name[ms_method], id[0], id[1], id[2], id[3]);
             return true;
         }
         if (ok) {
+            bool rotated = false;                        /* right device, buffer out of step */
+            for (int r = 1; r < 4; r++) {
+                bool same = true;
+                for (int i = 0; i < 4; i++) same = same && id[i] == want[(i + r) % 4];
+                rotated = rotated || same;
+            }
+            if (verbose) uart_printf("[CMD]   %3d kHz, %-18s: got %02X %02X %02X %02X%s\r\n", i2c_khz,
+                                     ms_method_name[ms_method], id[0], id[1], id[2], id[3],
+                                     rotated ? " (right ID, misaligned: re-aligning)" : "");
             snprintf(i2c_diag, sizeof(i2c_diag), "0x%02X ID read gave %02X %02X %02X %02X (want 86 28 02 00)",
                      a, id[0], id[1], id[2], id[3]);
-            uint8_t junk;                              /* Seeed library: read 1 byte to re-align */
-            HAL_I2C_Master_Receive(&hi2c1, (uint16_t)(a << 1), &junk, 1, I2C_TIMEOUT_MS);
+            fiveway_realign(a);
+            continue;
         }
+        if (tries >= 1) break;                         /* no answer twice: next combination */
     }
     if (verbose) uart_printf("[CMD]   %3d kHz, %-18s: %s\r\n", i2c_khz, ms_method_name[ms_method], i2c_diag);
     return false;
@@ -1091,10 +1112,10 @@ static bool fiveway_try_id(uint8_t a, bool verbose)
 static void fiveway_probe(bool verbose)
 {
 #if ENABLE_FIVEWAY
-    static const int speeds[3] = { 100, 50, 25 };
+    static const int speeds[3] = { 25, 50, 100 };     /* slowest first: the module needs it */
     fiveway_acked = 0;
     fiveway_failed = false;
-    if (i2c_khz != 100) i2c1_set_speed(100);
+    if (i2c_khz != 25) i2c1_set_speed(25);
     for (uint8_t a = 0x03; a <= 0x08 && !fiveway_acked; a++)
         if (i2c1_present(a)) fiveway_acked = a;
     if (!fiveway_acked) return;
@@ -1105,9 +1126,9 @@ static void fiveway_probe(bool verbose)
             if (fiveway_try_id(fiveway_acked, verbose)) { fiveway_addr = fiveway_acked; return; }
         }
     }
-    fiveway_failed = true;                            /* back to the default for the matrix */
+    fiveway_failed = true;
     ms_method = MS_M_STOP;
-    i2c1_set_speed(100);
+    i2c1_set_speed(25);
 #else
     (void)verbose;
 #endif
@@ -1118,6 +1139,11 @@ static bool fiveway_read(uint8_t *bits)
 {
     uint8_t buf[4 + 5];
     if (!fiveway_addr || !i2c1_cmd_read(fiveway_addr, MS_CMD_GET_DEV_EVENT, buf, sizeof(buf))) return false;
+    /* Sanity check: event word = 0 except bit 31 (has event), button bytes < 0x20
+     * (raw level + click flags). Anything else means the buffer slipped. */
+    bool sane = buf[0] == 0 && buf[1] == 0 && buf[2] == 0 && (buf[3] & 0x7FU) == 0;
+    for (uint8_t i = 0; i < 5; i++) sane = sane && buf[4 + i] < 0x20U;
+    if (!sane) { fiveway_realign(fiveway_addr); return false; }
     uint8_t b = 0;
     for (uint8_t i = 0; i < 5; i++) {
         bool raw = (buf[4 + i] & 0x01U) != 0;

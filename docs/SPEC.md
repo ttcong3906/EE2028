@@ -30,7 +30,7 @@ Ký hiệu *(đề)* = yêu cầu bắt buộc của đề bài. **Drone đứng
 | UART tới PC | USART1 PB6/PB7 (ST-LINK VCP), 115200 8N1 | Command Centre *(đề)* |
 | Red LED Matrix 8x8 (HT16K33) | Cổng Grove I2C, addr 0x70 | Bản đồ / la bàn / biểu tượng |
 | Buzzer | Cổng Grove **D6** (PB1, TIM3_CH4 PWM) | Âm thanh |
-| 5-way switch | Cổng Grove I2C, addr 0x03 | Ngắm bắn, đổi công suất, đăng ký lại phòng lab |
+| 5-way switch | Cổng Grove I2C, addr 0x03 | Ngắm bắn, đổi công suất, đăng ký lại phòng lab. Bus I2C1 chạy **25 kHz** vì 5-way chỉ trả lời ổn ở tốc độ này (đã thử trên module thật) |
 | IR reflective sensor | Cổng Grove **A0** (PC5, input số) | Vật cản / zombie áp sát |
 | WiFi ISM43362 (trên board) | SPI3 | **Giai đoạn cuối, tùy chọn:** gửi dữ liệu lên dashboard không dây |
 
