@@ -249,8 +249,9 @@ BATTLE không gửi telemetry định kỳ, chỉ gửi sự kiện.
 
 | Dòng | Khi nào | Nội dung |
 |---|---|---|
-| `[HUD] MODE BATTLE E 6 P 5 SEL 0 CD 0.0 WAVE 2 TGT 5 DOWN 12 HDG 237 LAB 12 ALT 3.2 RESC 0 IR 0` | Mỗi 250 ms | Trạng thái đầy đủ để vẽ dashboard |
-| `[MAP] 00183C0000000000 AIM 3 2` | Khi bản đồ hoặc tâm ngắm đổi, tối đa 5 lần/s | 8 hàng dạng hex + vị trí tâm ngắm |
+| `[HUD] ID 3 MODE BATTLE E 6 P 5 SEL 0 CD 0.0 WAVE 2 TGT 5 DOWN 12 SHOTS 4 HDG 237 LAB 12 ALT 3.2 HAB 0 RESC 0 IR 0 CAL 0` | Mỗi 250 ms | Trạng thái đầy đủ: E năng lượng, P công suất, SEL chế độ chọn, CD cooldown (s), TGT số ô nhiễm, LAB hướng phòng lab, HAB nơi ở, RESC số giây cứu hộ còn lại, CAL đang hiệu chuẩn la bàn |
+| `[MAP] 00183C0000000000 AIM 3 2` | Ở BATTLE/ATTACKED, khi bản đồ hoặc tâm ngắm đổi, tối đa 5 lần/s | 8 hàng dạng hex (hàng 0 trước, bit 7 = cột 0) + tâm ngắm (x, y) |
+| `[CTL] TILT <dx> <dy>`, `[CTL] BTN SINGLE\|DOUBLE`, `[CTL] ALIVE` | Tay cầm gửi (mục 15) | ALIVE mỗi 1 s để dashboard biết tay cầm còn kết nối |
 
 **PC → Drone:** gõ trên TeraTerm hoặc dashboard gửi. Drone tự echo (TeraTerm **tắt** Local echo). Backspace xóa, ESC hủy dòng.
 
