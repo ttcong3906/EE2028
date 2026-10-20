@@ -117,7 +117,7 @@ extern uint8_t SENSOR_IO_Read(uint8_t Addr, uint8_t Reg);
 #define FIVEWAY_REPEAT_MS       150U
 #define FIVEWAY_HOLD_MS         1000U  /* centre held: lab register / weapon power */
 #define I2C_TIMEOUT_MS          25U    /* Grove I2C transfers (5-way may stretch the clock) */
-#define MODULE_BOOT_MS          150U   /* let the 5-way's own MCU start before probing */
+#define MODULE_BOOT_MS          300U   /* let the 5-way's own MCU start before probing */
 #define MODULE_REPROBE_MS       2000U  /* STANDBY: look again for unplugged modules */
 #define COMPASS_PERIOD_MS       100U
 #define CALIB_MS                10000U
@@ -463,6 +463,13 @@ static bool cfg_save(void)
  * 5. I2C1 BUS FOR GROVE MODULES
  * ==========================================================================*/
 static bool i2c1_ready = false;
+/* I2C1 kernel clock = PCLK1 = 4 MHz (MSI after reset). TIMINGR fields:
+ * PRESC | SCLDEL | SDADEL | SCLH | SCLL. 100 kHz standard mode: tPRESC 0.25 us,
+ * SCL low 5.0 us, high 4.0 us, data hold 0.5 us, setup 1.25 us. */
+#define I2C_TIMING_100K 0x00420F13UL
+#define I2C_TIMING_50K  0x10420F13UL   /* same with PRESC = 1: everything x2 */
+#define I2C_TIMING_25K  0x30420F13UL   /* PRESC = 3: x4 */
+static uint32_t i2c_timing = I2C_TIMING_100K;
 
 static void I2C1_Init(void)
 {
@@ -478,7 +485,7 @@ static void I2C1_Init(void)
     HAL_GPIO_Init(GPIOB, &g);
 
     hi2c1.Instance              = I2C1;
-    hi2c1.Init.Timing           = 0x10320309;   /* ~100+ kHz at 4 MHz PCLK */
+    hi2c1.Init.Timing           = i2c_timing;
     hi2c1.Init.OwnAddress1      = 0;
     hi2c1.Init.AddressingMode   = I2C_ADDRESSINGMODE_7BIT;
     hi2c1.Init.DualAddressMode  = I2C_DUALADDRESS_DISABLE;
@@ -527,22 +534,33 @@ static void i2c1_recover(void)
     I2C1_Init();
 }
 
-static bool i2c1_check(bool ok)
+/* After a failure: if the bus is stuck, recover it and tell the caller to
+ * try once more (otherwise the device simply did not answer). */
+static bool i2c1_retry_after(bool ok, int attempt)
 {
-    if (!ok && i2c1_bus_stuck()) i2c1_recover();
-    return ok;
+    if (ok || attempt > 0 || !i2c1_bus_stuck()) return false;
+    i2c1_recover();
+    return i2c1_ready;
 }
 
 static bool i2c1_present(uint8_t addr7)
 {
-    if (!i2c1_ready) return false;
-    return i2c1_check(HAL_I2C_IsDeviceReady(&hi2c1, (uint16_t)(addr7 << 1), 2, I2C_TIMEOUT_MS) == HAL_OK);
+    for (int k = 0; i2c1_ready; k++) {
+        bool ok = HAL_I2C_IsDeviceReady(&hi2c1, (uint16_t)(addr7 << 1), 2, I2C_TIMEOUT_MS) == HAL_OK;
+        if (ok) return true;
+        if (!i2c1_retry_after(ok, k)) return false;
+    }
+    return false;
 }
 
 static bool i2c1_write(uint8_t addr7, uint8_t *data, uint16_t n)
 {
-    if (!i2c1_ready) return false;
-    return i2c1_check(HAL_I2C_Master_Transmit(&hi2c1, (uint16_t)(addr7 << 1), data, n, I2C_TIMEOUT_MS) == HAL_OK);
+    for (int k = 0; i2c1_ready; k++) {
+        bool ok = HAL_I2C_Master_Transmit(&hi2c1, (uint16_t)(addr7 << 1), data, n, I2C_TIMEOUT_MS) == HAL_OK;
+        if (ok) return true;
+        if (!i2c1_retry_after(ok, k)) return false;
+    }
+    return false;
 }
 
 /* Write one command byte, then read n bytes back (Seeed register protocol).
@@ -550,13 +568,16 @@ static bool i2c1_write(uint8_t addr7, uint8_t *data, uint16_t n)
  * the clock, so wait a little between the two and allow a generous timeout. */
 static bool i2c1_cmd_read(uint8_t addr7, uint8_t cmd, uint8_t *rx, uint16_t n)
 {
-    if (!i2c1_ready) return false;
-    bool ok = HAL_I2C_Master_Transmit(&hi2c1, (uint16_t)(addr7 << 1), &cmd, 1, I2C_TIMEOUT_MS) == HAL_OK;
-    if (ok) {
-        i2c_gap(200);
-        ok = HAL_I2C_Master_Receive(&hi2c1, (uint16_t)(addr7 << 1), rx, n, I2C_TIMEOUT_MS) == HAL_OK;
+    for (int k = 0; i2c1_ready; k++) {
+        bool ok = HAL_I2C_Master_Transmit(&hi2c1, (uint16_t)(addr7 << 1), &cmd, 1, I2C_TIMEOUT_MS) == HAL_OK;
+        if (ok) {
+            i2c_gap(200);
+            ok = HAL_I2C_Master_Receive(&hi2c1, (uint16_t)(addr7 << 1), rx, n, I2C_TIMEOUT_MS) == HAL_OK;
+        }
+        if (ok) return true;
+        if (!i2c1_retry_after(ok, k)) return false;
     }
-    return i2c1_check(ok);
+    return false;
 }
 
 /* ============================================================================
@@ -1002,8 +1023,6 @@ static bool     fw_center_held = false;              /* hold action already done
 static void fiveway_probe(void)
 {
 #if ENABLE_FIVEWAY
-    uint32_t up = HAL_GetTick();                      /* module MCU boot time after power-on */
-    if (up < MODULE_BOOT_MS) HAL_Delay(MODULE_BOOT_MS - up);
     for (uint8_t a = 0x03; a <= 0x08 && !fiveway_addr; a++) {
         if (!i2c1_present(a)) continue;               /* quick ACK test first */
         for (int tries = 0; tries < 3; tries++) {     /* the Seeed library also retries */
@@ -1011,6 +1030,8 @@ static void fiveway_probe(void)
             if (!i2c1_cmd_read(a, MS_CMD_GET_DEV_ID, id, 4)) continue;
             uint16_t vid = (uint16_t)(id[0] | (id[1] << 8)), pid = (uint16_t)(id[2] | (id[3] << 8));
             if (vid == MS_VID && pid == MS_PID_5WAY) { fiveway_addr = a; break; }
+            uint8_t junk;                              /* Seeed library: read 1 byte to re-align */
+            HAL_I2C_Master_Receive(&hi2c1, (uint16_t)(a << 1), &junk, 1, I2C_TIMEOUT_MS);
         }
     }
 #endif
@@ -2027,7 +2048,7 @@ static void cmd_help(void)
                "[CMD]   battle:  AIM <dx> <dy> | LOCK | POWER RULE|1..5|NEXT\r\n"
                "[CMD]   standby: HOME | CALIB | BLACKBOX | ID <1..9> | MOUNT CHIPUP|ZDOWN | MUTE ON|OFF | ROLE DRONE|CONTROLLER\r\n"
 #if ENABLE_DEV_TOOLS
-               "[CMD]   dev: I2CSCAN | I2CDUMP <addr> <cmd> <n> | INPUTS\r\n"
+               "[CMD]   dev: I2CSCAN | I2CDUMP <addr> <cmd> <n> | I2CSPEED 100|50|25 | INPUTS\r\n"
 #endif
                );
 }
@@ -2289,6 +2310,17 @@ static void cmd_exec(char *line)
 
 #if ENABLE_DEV_TOOLS
     if (!strcmp(verb, "I2CSCAN")) { i2c_scan(); return; }
+    if (!strcmp(verb, "I2CSPEED")) {
+        int k = arg1 ? atoi(arg1) : 0;
+        uint32_t t = k == 100 ? I2C_TIMING_100K : (k == 50 ? I2C_TIMING_50K : (k == 25 ? I2C_TIMING_25K : 0));
+        if (!t) { uart_write("[CMD] ERR usage: I2CSPEED 100 | 50 | 25   (kHz)\r\n"); return; }
+        i2c_timing = t;
+        HAL_I2C_DeInit(&hi2c1);
+        I2C1_Init();
+        mx_ok = false; fiveway_addr = 0; mx_shown_valid = false;     /* re-probed within 2 s */
+        uart_printf("[CMD] OK I2C at %d kHz, modules will be re-probed\r\n", k);
+        return;
+    }
     if (!strcmp(verb, "INPUTS")) {
         uint8_t f = 0;
         bool fok = fiveway_read(&f);
@@ -2403,7 +2435,10 @@ static void app_init(void)
     BSP_LED_Init(LED2);
     UART1_Init();
     sensors_init();
+    uint32_t up = HAL_GetTick();                      /* Grove modules' own MCUs need to boot */
+    if (up < MODULE_BOOT_MS) HAL_Delay(MODULE_BOOT_MS - up);
     I2C1_Init();
+    if (i2c1_ready && i2c1_bus_stuck()) i2c1_recover();   /* RESET does not reset the modules */
     mx_init();
     buzzer_init();
     ir_init();
