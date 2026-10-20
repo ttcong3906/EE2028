@@ -1,14 +1,20 @@
-# EE2028 A2 — The Last of EE2028: Spec v3.1
+# EE2028 A2 — The Last of EE2028: Spec v3.2
 
 Tài liệu này là "hợp đồng" của nhóm: code viết đúng theo đây, muốn đổi hành vi thì sửa file này trước.
-Toàn bộ firmware nằm trong **một file `Core/Src/main.c`**. Lịch sử quyết định ở mục 17.
+Firmware nằm trong **một file `Core/Src/main.c`** (cả drone lẫn tay cầm, chọn bằng cấu hình `ROLE`). Chương trình laptop nằm trong `tools/dashboard.py`. Lịch sử quyết định ở mục 18.
 
-**Giới hạn phần cứng:** tối đa **4 module ngoài**. Nhóm dùng **OLED, LED matrix, buzzer, 5-way switch**. **Một drone, không dùng WiFi.** Board thứ hai chỉ dùng để hai người làm và test song song.
+## Tổng quan
 
-**Câu chuyện chung:** drone đi qua đúng vòng đời mà đề đã cho, mỗi module gắn vào một giai đoạn:
-**trinh sát** ở STANDBY (6 cảm biến, la bàn về phòng lab, tìm nơi ở cho người) → **chiến đấu** ở BATTLE (bản đồ lây nhiễm trên LED matrix, ngắm bằng 5-way, chọn công suất laser) → **bị hạ** ở The Last of EE2028 (SOS, chờ cứu) → **được cứu** hoặc **tự hủy** (cắt liên lạc, hộp đen được giữ lại để điều tra).
+| Thành phần | Là gì | Phần cứng |
+|---|---|---|
+| **Drone** (board 1) | Toàn bộ yêu cầu của đề + tính năng thêm | **LED matrix, buzzer, 5-way switch, IR sensor** (đúng 4 module ngoài) |
+| **Tay cầm phi công** (board 2) | Nghiêng để ngắm, nút để khóa mục tiêu / đổi công suất / gọi cứu hộ | Không module ngoài, chỉ dùng accelerometer, nút và LED trên board |
+| **Command Centre** (laptop) | Dashboard Python **thay cho OLED**: hiển thị mọi thứ của drone, chuyển lệnh từ tay cầm sang drone | Đọc drone qua USB (UART), sau này qua WiFi |
 
-Ký hiệu *(đề)* = yêu cầu bắt buộc của đề bài. Phần còn lại là tính năng thêm. **Không cắm module ngoài nào thì phần *(đề)* vẫn phải chạy đúng.**
+**Câu chuyện chung:** drone đi qua đúng vòng đời mà đề cho, mỗi module gắn vào một giai đoạn:
+**trinh sát** ở STANDBY (6 cảm biến, la bàn về phòng lab, tìm nơi ở cho người, IR tránh vật cản) → **chiến đấu** ở BATTLE (bản đồ lây nhiễm trên LED matrix, ngắm bằng 5-way hoặc tay cầm, IR phát hiện zombie áp sát) → **bị hạ** ở The Last of EE2028 (SOS, chờ cứu) → **được cứu** hoặc **tự hủy** (cắt liên lạc, hộp đen được giữ lại để điều tra).
+
+Ký hiệu *(đề)* = yêu cầu bắt buộc của đề bài. **Drone đứng một mình (không laptop, không tay cầm, không module ngoài) vẫn phải chạy đúng toàn bộ phần *(đề)*.**
 
 ---
 
@@ -16,18 +22,17 @@ Ký hiệu *(đề)* = yêu cầu bắt buộc của đề bài. Phần còn l�
 
 | Thiết bị | Kết nối | Vai trò |
 |---|---|---|
-| Board | B-L4S5I-IOT01A (STM32L4S5VI), clock 4 MHz MSI mặc định | |
+| Board ×2 | B-L4S5I-IOT01A (STM32L4S5VI), clock 4 MHz MSI mặc định | Drone + tay cầm |
 | LED2 (xanh lá) | PB14 | Báo mode *(đề)* |
 | User button B1 | PC13, EXTI13, cả hai cạnh | Nút chính *(đề)* |
-| HTS221 (T, H), LPS22HB (P), LSM6DSL (A, G), LIS3MDL (M) | I2C2 nội bộ qua BSP | 6 cảm biến *(đề)*, la bàn, phát hiện lật |
+| HTS221 (T, H), LPS22HB (P), LSM6DSL (A, G), LIS3MDL (M) | I2C2 nội bộ qua BSP | 6 cảm biến *(đề)*, la bàn, phát hiện lật; trên tay cầm: đo nghiêng |
 | LSM6DSL INT1 | PD11, EXTI11 | Ngắt 6D khi đổi hướng |
 | UART tới PC | USART1 PB6/PB7 (ST-LINK VCP), 115200 8N1 | Command Centre *(đề)* |
-| OLED 0.96" 128x64 | Cổng Grove I2C, addr 0x3C | Buồng lái |
-| Red LED Matrix 8x8 (HT16K33) | Cổng Grove I2C, addr 0x70 | Bản đồ / la bàn |
+| Red LED Matrix 8x8 (HT16K33) | Cổng Grove I2C, addr 0x70 | Bản đồ / la bàn / biểu tượng |
 | Buzzer | Cổng Grove **D6** (PB1, TIM3_CH4 PWM) | Âm thanh |
-| 5-way switch | Cổng Grove I2C, addr 0x03 | Đổi trang, ngắm bắn, đổi công suất |
-
-Bốn cổng I2C trên shield nối chung một bus (PB8/PB9).
+| 5-way switch | Cổng Grove I2C, addr 0x03 | Ngắm bắn, đổi công suất, đăng ký lại phòng lab |
+| IR reflective sensor | Cổng Grove **A0** (PC5, input số) | Vật cản / zombie áp sát |
+| WiFi ISM43362 (trên board) | SPI3 | **Giai đoạn cuối, tùy chọn:** gửi dữ liệu lên dashboard không dây |
 
 ---
 
@@ -47,7 +52,7 @@ Bốn cổng I2C trên shield nối chung một bus (PB8/PB9).
 
 ---
 
-## 3. Nút bấm B1 *(đề: phải đọc bằng ngắt)*
+## 3. Nút bấm B1 trên drone *(đề: phải đọc bằng ngắt)*
 
 - Ngắt EXTI13 bắt cả cạnh nhấn và cạnh nhả, chỉ ghi thời điểm. Không UART, không I2C trong ISR.
 - **Debounce:** một lần nhấn chỉ được tính khi nút đã nhả ổn định ≥ 30 ms và cách lần nhấn trước ≥ 50 ms. Giữ nút bao lâu cũng chỉ là một lần.
@@ -62,60 +67,63 @@ Bốn cổng I2C trên shield nối chung một bus (PB8/PB9).
 
 ---
 
-## 4. Cấu hình drone
+## 4. Cấu hình
 
 | Mục | Mặc định | Đổi bằng |
 |---|---|---|
-| **Số hiệu drone** | Tính từ **mã định danh duy nhất 96-bit (UID)** của chip, mỗi board một số | `ID <n>` |
+| **Vai trò board** | `DRONE` | `ROLE DRONE\|CONTROLLER` (đổi xong tự khởi động lại) |
+| **Số hiệu drone** | Một chữ số 1–9, tính từ **UID 96-bit** của chip | `ID <1..9>` |
 | **Kiểu lắp** | Mặt chip hướng lên là bình thường | `MOUNT CHIPUP\|ZDOWN` (`ZDOWN` = Z+ hướng xuống đất, đúng chữ đề) |
 | **Im lặng** | Tắt | `MUTE ON\|OFF` (SOS vẫn kêu) |
+| **WiFi** (giai đoạn cuối) | Chưa cấu hình | `WIFI <ssid> <password>`, `SERVER <ip> <port>` |
 
-- Cấu hình được lưu vào **trang flash áp chót** (có mã kiểm tra), nên reset hay mất điện không mất. Mỗi lệnh tự lưu và trả `[CMD] OK … (saved)`.
-- Cấu hình chỉ đổi được ở **STANDBY**.
+- Lưu vào **trang flash áp chót** (có mã kiểm tra), reset hay mất điện không mất. Mỗi lệnh tự lưu, trả `[CMD] OK … (saved)`.
+- Chỉ đổi được ở **STANDBY**.
 
 ---
 
-## 5. Khởi động
+## 5. Khởi động (drone)
 
-| Bước | Làm gì | Hiển thị | UART |
+| Bước | Làm gì | LED matrix / buzzer | UART |
 |---|---|---|---|
-| 1 | Đọc cấu hình từ flash, tính số hiệu từ UID | | `=== Drone #3 online === mount: chip-up, silent: OFF` |
-| 2 | Kiểm tra module | OLED **trang kiểm tra hệ thống** 2.5 s: SENSORS / LED MATRIX / 5-WAY / BLACK BOX | `[EVT] System check: sensors OK, OLED OK, LED matrix OK, 5-way OK` |
+| 1 | Đọc cấu hình, tính số hiệu | | `=== Drone #3 online === mount: chip-up, silent: OFF` |
+| 2 | Kiểm tra module | | `[EVT] System check: sensors OK, LED matrix OK, 5-way OK, IR OK` |
 | 3 | Lưu `P0` (trung bình 10 lần đọc) làm mốc độ cao 0 m | | `[EVT] Altitude zero at 1008.52 hPa` |
 | 4 | Lưu hướng hiện tại làm **hướng về phòng lab** | | `[EVT] Lab bearing registered: 237 deg` |
 | 5 | Nếu flash còn hộp đen của lần bay trước | | `[EVT] Black box of Drone #3 recovered (18 records). Type BLACKBOX to read` |
-| 6 | Vào STANDBY | Matrix hiện số hiệu 1 s, buzzer kêu khởi động | `Entering STANDBY MODE` *(đề)* |
+| 6 | Vào STANDBY | Số hiệu 1 s, tiếng khởi động | `Entering STANDBY MODE` *(đề)* |
 
 ---
 
 ## 6. STANDBY: trinh sát
 
-| Thành phần | Làm gì | Hiển thị | UART |
+| Thành phần | Làm gì | LED matrix / buzzer | UART |
 |---|---|---|---|
-| 6 cảm biến *(đề)* | Đọc mỗi 1 s, so ngưỡng (mục 11) | OLED trang 1 | `[TLM] T: … M: …` **đúng 6 trường**, hoặc `[WARN] …` khi vượt ngưỡng *(đề)* |
+| 6 cảm biến *(đề)* | Đọc mỗi 1 s, so ngưỡng (mục 11) | | `[TLM] T: … M: …` **đúng 6 trường**, hoặc `[WARN] …` *(đề)* |
 | LED2 *(đề)* | Sáng liên tục | | |
-| La bàn (mục 12) | Hướng có bù nghiêng, mũi tên về phòng lab | Matrix: mũi tên. OLED trang 2: `HDG 237 SW`, `TURN +135` | |
-| **Tìm nơi ở** | Nhiệt độ 20–32 °C **và** độ ẩm 40–70 %RH liên tục 3 s (đề: humidity "used to find new human habitats") | OLED `HABITAT: FOUND`, matrix hình ngôi nhà 2 s, chuông | `[EVT] Possible human habitat found: T 26.1 C, H 58 %RH`; khi mất: `[EVT] Habitat conditions lost` |
-| 5-way | Lên/xuống đổi trang OLED. Ở trang 4, trái/phải lướt hộp đen | | |
-| PB single | **Báo cáo trinh sát** | OLED `REPORT SENT` 1 s | `[REPORT] Drone #3: alt +2.1 m, hdg 237, habitat found 2x, zombies down 12, shots 6` |
+| La bàn (mục 12) | Hướng có bù nghiêng | Mũi tên chỉ về phòng lab | |
+| **Tìm nơi ở** | Nhiệt độ 20–32 °C **và** độ ẩm 40–70 %RH liên tục 3 s (đề: humidity "used to find new human habitats") | Hình ngôi nhà 2 s, chuông | `[EVT] Possible human habitat found: T 26.1 C, H 58 %RH` / `[EVT] Habitat conditions lost` |
+| **IR** | Vật ở gần: **tránh va chạm** | Dấu `!` 1 s, bíp | `[EVT] Obstacle at close range, holding position` |
+| 5-way giữa, **giữ 1 s** | **Đăng ký lại phòng lab**: hướng hiện tại + mốc độ cao 0 m (như lệnh `HOME`) | Hai tiếng bíp | `[EVT] Lab re-registered: bearing 012 deg, altitude zero` |
+| PB single | **Báo cáo trinh sát** | Bíp | `[REPORT] Drone #3: alt +2.1 m, hdg 237, habitat found 2x, zombies down 12, shots 6` |
 
-- Lật board trong STANDBY: không có tác dụng.
+- Các hướng của 5-way không dùng ở STANDBY. Lật board ở STANDBY không có tác dụng.
 - Khoảng tìm nơi ở nới rộng hơn chuẩn tiện nghi ASHRAE (khoảng 30–60 %RH) để demo được trong phòng lab có máy lạnh ở Singapore.
+- Sự kiện IR có thời gian chờ 3 s để không lặp.
 
 ---
 
 ## 7. BATTLE: chiến đấu
 
-| Thành phần | Làm gì | Hiển thị | UART |
+| Thành phần | Làm gì | LED matrix / buzzer | UART |
 |---|---|---|---|
 | Khi vào | Bắt đầu **đợt 1** trên bản đồ mới (mục 8) | | `Entering BATTLE MODE` *(đề)* + `[STAT]` + `[EVT] Wave 1 incoming: 3 outbreaks` |
 | LED2 *(đề)* | Nháy 1 Hz | | |
-| LED matrix | Bản đồ lây nhiễm + tâm ngắm | | |
-| OLED | Màn hình hành động (mục 13) | | |
-| PB single *(đề)* | Nạp +3/10, đủ năng lượng thì tự bắn (mục 9) | | `[EVT] LASER charged: 3/10 -> 6/10` |
-| 5-way 4 hướng | Dời tâm ngắm 1 ô, giữ nghiêng thì chạy liên tục | Tâm ngắm nhấp nháy | |
-| 5-way giữa, bấm ngắn | Nhảy tới ô nhiễm gần nhất | `TARGET LOCKED` | `[EVT] Target locked at (3,2)` |
-| 5-way giữa, **giữ 1 s** | Đổi công suất: RULE 5/10 → 1 → 2 → 3 → 4 → 5 → RULE (mục 9) | `POWER 3/10 PEW SEL` | `[EVT] Weapon: power 3/10, cooldown 3 s` |
+| PB single *(đề)* | Nạp +3/10, đủ năng lượng thì tự bắn (mục 9) | Bíp nạp; tia + vùng nổ, piuuu / pew / BOOM | `[EVT] LASER charged: 3/10 -> 6/10` |
+| 5-way 4 hướng / tay cầm nghiêng | Dời tâm ngắm 1 ô, giữ thì chạy liên tục | Tâm ngắm nháy 4 Hz | |
+| 5-way giữa ngắn / tay cầm nhấn 1 lần | Nhảy tới ô nhiễm gần nhất | | `[EVT] Target locked at (3,2)` |
+| 5-way giữa **giữ 1 s** / tay cầm nhấn đúp | Đổi công suất: RULE 5/10 → 1 → 2 → 3 → 4 → 5 → RULE | | `[EVT] Weapon: power 3/10, cooldown 3 s` |
+| **IR** | **Zombie áp sát**: ô ngay trước drone (hàng 7, cột 3–4) bị nhiễm và nhấp nháy | Báo động | `[EVT] ZOMBIE AT CLOSE RANGE!` |
 | Accel *(đề)* | Phát hiện lật theo kiểu lắp (mục 10) | | → ATTACKED |
 | PB double *(đề)* | Về STANDBY, **bản đồ bị xóa** | | `Entering STANDBY MODE` |
 
@@ -127,10 +135,11 @@ BATTLE không gửi telemetry định kỳ, chỉ gửi sự kiện.
 
 - 8x8 là khu vực phía trước drone nhìn từ trên xuống. Drone ở giữa cạnh dưới. Hàng 0 xa nhất, hàng 7 gần nhất. Ô sáng = khu bị zombie chiếm.
 - Đợt *n* rải **2 + n** ổ nhiễm (tối đa 12) ở hàng 0–4. Trong đợt, mỗi khoảng thời gian một ô nhiễm lây sang một ô kề chưa nhiễm. Khoảng này bắt đầu 3 s ở đợt 1, mỗi đợt nhanh hơn 0.25 s, nhanh nhất 1 s.
-- **Dọn sạch bản đồ** → `[EVT] Wave 2 cleared! AREA CLEARED`, tiếng chiến thắng, matrix hiện dấu tích, OLED `WAVE 2  CLEARED!`. 2 s sau đợt kế tiếp bắt đầu.
+- **Dọn sạch bản đồ** → `[EVT] Wave 2 cleared! AREA CLEARED`, tiếng chiến thắng, matrix hiện dấu tích. 2 s sau đợt kế tiếp bắt đầu. Trong lúc nghỉ, IR không tạo ổ mới.
 - Thua một đợt không dẫn tới ATTACKED. Theo đề, drone chỉ bị hạ khi bị lật.
-- **Quá 75 % (≥ 48/64 ô):** chỉ báo `[EVT] AREA OVERRUN (52/64)` và OLED `OVERRUN!`.
+- **Quá 75 % (≥ 48/64 ô):** chỉ báo `[EVT] AREA OVERRUN (52/64)`.
 - Về STANDBY thì bản đồ bị xóa, vào lại BATTLE thì bắt đầu từ đợt 1. Bị tấn công thì bản đồ dừng lây. Được cứu thì tiếp tục đúng đợt đó.
+- Không có 5-way và tay cầm: tâm ngắm tự nhảy tới ô nhiễm gần nhất trước mỗi phát bắn.
 
 ---
 
@@ -139,9 +148,8 @@ BATTLE không gửi telemetry định kỳ, chỉ gửi sự kiện.
 - Năng lượng theo đơn vị **1/10**, số nguyên 0–10. Mỗi single press **+3/10** *(đề)*.
 - **Chế độ bắn:**
   - **RULE** (mặc định, đúng đề): mỗi phát `p = 5`, đủ năng lượng là tự bắn ngay, **không cooldown** *(đề)*.
-  - **SEL** (giữ nút giữa 5-way 1 s, hoặc lệnh `POWER 1..5`; `POWER RULE` để về đúng đề): `p` = 1–5. Sau mỗi phát có **cooldown `p` giây**, riêng `p = 1` không có. Trong lúc cooldown vẫn nạp được. Hết cooldown mà đủ năng lượng thì tự bắn ngay.
+  - **SEL** (5-way giữa giữ 1 s, tay cầm nhấn đúp, hoặc lệnh `POWER 1..5`; `POWER RULE` để về đúng đề): `p` = 1–5. Sau mỗi phát có **cooldown `p` giây**, riêng `p = 1` không có. Trong lúc cooldown vẫn nạp được. Hết cooldown mà đủ năng lượng thì tự bắn ngay.
 - Tự bắn khi năng lượng ≥ `p`, mỗi lần **một phát**, trừ `p`. Năng lượng thừa để dành, tối đa 10/10.
-- **Vùng nổ** quanh tâm ngắm:
 
 | `p` | Vùng nổ | Âm thanh |
 |---|---|---|
@@ -176,106 +184,113 @@ BATTLE không gửi telemetry định kỳ, chỉ gửi sự kiện.
 | M | Độ lớn từ trường | `uT` | 10.0 | 100.0 | Từ trường Trái Đất 25–65 µT; > 100 µT là nhiễu từ, la bàn sai |
 
 - Đổi đơn vị: A `mg × 9.80665 / 1000`; G `mdps / 1000`; M `mGauss / 10 = µT`.
-- **Độ cao** (OLED, báo cáo): mốc 0 m là `P0` lúc khởi động, `h = 44330 × (1 − (P/P0)^0.1903)` m. Lọc trung bình trượt rồi làm tròn theo bậc 0.1 hPa (≈ 0.85 m) tính từ P0, có trễ 0.06 hPa để không nhảy. Lệnh `HOME` đặt lại mốc. Dòng `[TLM]` vẫn gửi áp suất thật.
+- **Độ cao** (dashboard, báo cáo): mốc 0 m là `P0` lúc khởi động, `h = 44330 × (1 − (P/P0)^0.1903)` m. Lọc trung bình trượt rồi làm tròn theo bậc 0.1 hPa (≈ 0.85 m) tính từ P0, có trễ 0.06 hPa để không nhảy. Dòng `[TLM]` vẫn gửi áp suất thật.
 
 ---
 
 ## 12. La bàn về phòng lab
 
 - Heading = `atan2` của từ trường ngang, **bù nghiêng** bằng accelerometer, 0–359°, theo kiểu lắp.
-- **Hướng về phòng lab** = hướng lúc khởi động. `HOME` đăng ký lại hướng và mốc độ cao.
-- Matrix ở STANDBY: mũi tên 8 hướng chỉ `lab_bearing − heading`.
+- **Hướng về phòng lab** = hướng lúc khởi động. Đăng ký lại bằng 5-way giữa giữ 1 s ở STANDBY hoặc lệnh `HOME` (cùng lúc đặt lại mốc độ cao).
+- Matrix ở STANDBY: mũi tên 8 hướng chỉ `lab_bearing − heading`. Dashboard: kim la bàn.
 - `CALIB`: xoay board nằm ngang 1–2 vòng trong 10 s, lấy min/max trục X, Y làm offset nhiễu từ cứng.
 
 ---
 
-## 13. OLED 128x64
+## 13. ATTACKED và TERMINATED *(đề)*
 
-**Ưu tiên hiển thị:** ATTACKED → cảnh báo cảm biến → hiệu ứng bắn → thông báo thường. Thông báo đang hiện không bị thông báo kém quan trọng hơn ghi đè. Khi bị lật, mọi hiệu ứng nhường chỗ ngay.
+**ATTACKED:**
+- LED2 nháy 2 Hz *(đề)*. Khi vào: `[EVT] Drone #3 flipped! The Last of EE2028`. Mỗi 1 s: `[ATTACK] Drone #3 Was Attacked! Rescue in 7 s` *(đề)*.
+- Buzzer phát **Morse SOS** liên tục, kêu cả khi im lặng. Matrix hiện chữ S-O-S theo nhịp.
+- **Được cứu** khi: double press trên drone *(đề)*, lệnh `RESCUE`, hoặc **nhấn đúp trên tay cầm** ("phòng lab cử đội cứu hộ"). Báo `[EVT] Drone #3 rescued!`, về BATTLE. Matrix mặt cười 1 s, ba nốt đi lên.
+- Single press, 5-way, IR bị bỏ qua.
 
-**STANDBY**, 5-way lên/xuống đổi trang:
-```
-Trang 1: cảm biến         Trang 2: điều hướng        Trang 3: nhiệm vụ          Trang 4: hộp đen
-|DRONE#3 STANDBY  1/4 |   |DRONE#3 STANDBY  2/4 |   |DRONE#3 STANDBY  3/4 |   |DRONE#3 STANDBY  4/4 |
-|T 25.3C  H 61.2%     |   |HDG 237 SW           |   |HABITAT FOUND: 2x    |   |BLACK BOX: LOST DRONE|
-|P 1008.5hPa          |   |LAB BEARING 012 N    |   |ZOMBIES DOWN: 12     |   |WAVES 3  SHOTS 12    |
-|ALT   +3.2 m         |   |TURN  +135 deg       |   |SHOTS FIRED:   6     |   |CELLS CLEARED 28     |
-|A  9.79 m/s2         |   |ALT   +3.2 m         |   |WAVES CLEARED: 3     |   |END: RESCUE TIMEOUT  |
-|G  1.25 dps          |   |                     |   |FLIGHT 03:12         |   |EVT 05/18 t=41.2s    |
-|M  45.3 uT           |   |                     |   |                     |   |FIRE P5 (3,2) x7     |
-|STATUS: ALL NORMAL   |   |HABITAT: SEARCHING   |   |1x REPORT 2x BATTLE  |   |<> EVENTS  ^v PAGES  |
-```
-
-**BATTLE:**
-```
-|WAVE 2   TARGETS  5  |
-|[■][■][■][■][■][■][ ]|   ← thanh năng lượng lớn 2 dòng
-|ENERGY  6/10 P5 BOOM |   ← SEL: P3 PEW SEL; cooldown: COOL3.2
-|AIM (3,2)    TARGET! |
-|DOWN 12   WAVES CLR 1|
-|RADAR: CLEAR         |   ← HIT!/MISSED!/AREA CLEARED! > OVERRUN!
-|1x CHARGE 2x STANDBY |
-```
-
-**ATTACKED:** `!! UNDER ATTACK !!`, `DRONE #3  RESCUE IN`, số giây chữ lớn 2x, `DOUBLE-PRESS TO RESCUE`, `SOS BEACON ON`.
-**TERMINATED:** `DRONE #3 LOST`, `COMMS OFFLINE`, `BLACK BOX SAVED`, `END: RESCUE TIMEOUT`.
-
----
-
-## 14. LED matrix, buzzer, 5-way theo trạng thái
-
-| Lúc | LED matrix | Buzzer | 5-way |
-|---|---|---|---|
-| Khởi động | Số hiệu drone 1 s | Tiếng khởi động | |
-| STANDBY | Mũi tên la bàn; nhà 2 s khi tìm thấy nơi ở | Chuông nơi ở, bíp báo cáo | ↑↓ đổi trang; ←→ lướt hộp đen ở trang 4 |
-| BATTLE | Bản đồ + tâm ngắm + tia/vùng nổ; dấu tích khi nghỉ giữa đợt | Nạp: bíp; bắn: piuuu / pew / BOOM; hết đợt: chiến thắng; laser sẵn sàng: tách | 4 hướng ngắm; giữa ngắn khóa mục tiêu; giữa giữ 1 s đổi công suất |
-| ATTACKED | Chữ S-O-S theo nhịp Morse | **Morse SOS liên tục, kêu cả khi im lặng** | Bỏ qua |
-| Được cứu | Mặt cười 1 s | Ba nốt đi lên | |
-| TERMINATED | Dấu X | Giai điệu kết thúc | |
-
-- Im lặng (`MUTE ON`) tắt mọi âm thanh trừ SOS.
-- Thứ tự nút bên trong 5-way chưa chắc chắn: kiểm tra bằng lệnh `INPUTS` lần đầu cắm, sai thì đổi `#define`.
-
-**ATTACKED** *(đề)*: LED2 nháy 2 Hz. Khi vào: `[EVT] Drone #3 flipped! The Last of EE2028`. Mỗi 1 s: `[ATTACK] Drone #3 Was Attacked! Rescue in 7 s`. Double press hoặc lệnh `RESCUE` trong 10 s: `[EVT] Drone #3 rescued!`, về BATTLE. Single press và 5-way bị bỏ qua.
-
-**TERMINATED** *(đề)*, hết 10 s không ai cứu:
-1. Ghi hộp đen vào flash (mục 15).
+**TERMINATED** (hết 10 s không ai cứu):
+1. Ghi hộp đen vào flash (mục 14).
 2. `[EVT] Drone #3: no rescue. Black box saved. Self-destructing. Cutting all communication.`
-3. OLED, matrix, buzzer như bảng trên. Tắt LED2, tắt UART và các ngắt, MCU vào Standby mode.
-4. Chỉ nút **RESET** đen (hoặc rút nguồn) mới thoát được. Board khởi động lại như một drone mới xuất kích.
+3. Matrix dấu X, giai điệu kết thúc. Tắt LED2, tắt UART (và WiFi nếu có, giữ module ở trạng thái reset), tắt các ngắt, MCU vào Standby mode.
+4. Chỉ nút **RESET** đen (hoặc rút nguồn) mới thoát được.
 5. **Chế độ huấn luyện** (`TRAINING ON`): thay vì cắt liên lạc, báo `[EVT] TRAINING: drone #3 would self-destruct now. Restarting in 3 s` rồi tự khởi động lại. Hộp đen vẫn được ghi.
 
 ---
 
-## 15. Hộp đen (black box)
+## 14. Hộp đen (black box)
 
 - Ghi **từng chuyến xuất kích**: bắt đầu khi vào BATTLE (xóa bản ghi cũ trong RAM và flash), tới khi về STANDBY hoặc tự hủy. Được cứu vẫn là cùng chuyến.
-- **32 sự kiện gần nhất** (bộ đệm vòng): đợt bắt đầu/dọn xong, nạp, bắn, đổi công suất, quá 75 %, bị lật, được cứu, về STANDBY, tự hủy.
+- **32 sự kiện gần nhất** (bộ đệm vòng): đợt bắt đầu/dọn xong, nạp, bắn, đổi công suất, zombie áp sát, quá 75 %, bị lật, được cứu, về STANDBY, tự hủy.
 - **Bản tổng kết:** số đợt đã dọn, số phát bắn, số ô đã dọn, thời gian bay, lý do kết thúc (`RETURNED` / `RESCUE TIMEOUT`).
 - Khi tự hủy: ghi **một lần** vào **trang flash cuối cùng** (có mã kiểm tra), sống sót qua RESET và mất điện.
-- `BLACKBOX` (chỉ ở STANDBY): in tổng kết rồi từng sự kiện. OLED trang 4 xem được trên màn hình.
-- Ví dụ: `[BBOX] LAST MISSION: waves cleared 3, shots fired 12, cells cleared 28, flight 95 s, END: RESCUE TIMEOUT`
+- `BLACKBOX` (chỉ ở STANDBY): in tổng kết rồi từng sự kiện. Dashboard có tab xem dạng dòng thời gian.
 
 ---
 
-## 16. UART, lệnh, kiến trúc
+## 15. Tay cầm phi công (board 2, `ROLE CONTROLLER`)
 
-**Board → PC:** tiền tố `[TLM]`, `[WARN]`, `[ATTACK]`, `[EVT]`, `[STAT]`, `[REPORT]`, `[BBOX]`, `[CMD]`. Thông báo đổi mode giữ đúng chữ của đề. Kết thúc `\r\n`.
+- Không cắm module ngoài. Cắm USB vào laptop. Dashboard đọc tay cầm và chuyển thành **lệnh UART bình thường** gửi xuống drone, nên drone không cần biết tay cầm tồn tại.
+- Khởi động: `=== Pilot controller online ===`.
 
-**PC → Board:** board tự echo và vẽ lại dòng đang gõ khi có tin nhắn mới (TeraTerm **tắt** Local echo). Backspace xóa, ESC hủy dòng.
+| Thao tác trên tay cầm | Tay cầm gửi | Dashboard gửi xuống drone |
+|---|---|---|
+| Nghiêng > 20° theo một hướng (giữ thì lặp mỗi 150 ms) | `[CTL] TILT <dx> <dy>` | `AIM <dx> <dy>` (chỉ khi drone ở BATTLE) |
+| Nhấn 1 lần | `[CTL] BTN SINGLE` | BATTLE: `LOCK` |
+| Nhấn đúp | `[CTL] BTN DOUBLE` | BATTLE: `POWER NEXT`. ATTACKED: `RESCUE` (đội cứu hộ của phòng lab) |
+
+- **LED2 của tay cầm** báo mode của drone (dashboard gửi `LINK <mode>` mỗi 250 ms): sáng liên tục = STANDBY, nháy 1 Hz = BATTLE, nháy 2 Hz = ATTACKED, tắt = mất kết nối với drone quá 2 s.
+- Nút của tay cầm dùng chung bộ debounce và phân biệt single/double như drone.
+- Không có tay cầm thì drone vẫn đủ chức năng (5-way hoặc tự ngắm).
+
+---
+
+## 16. UART, lệnh và dữ liệu cho dashboard
+
+**Drone → PC:** tiền tố `[TLM]`, `[WARN]`, `[ATTACK]`, `[EVT]`, `[STAT]`, `[REPORT]`, `[BBOX]`, `[CMD]`. Thông báo đổi mode giữ đúng chữ của đề. Kết thúc `\r\n`.
+
+**Dòng dữ liệu cho dashboard** (chỉ gửi sau khi dashboard bật bằng `DASH ON`, để TeraTerm vẫn gọn):
+
+| Dòng | Khi nào | Nội dung |
+|---|---|---|
+| `[HUD] MODE BATTLE E 6 P 5 SEL 0 CD 0.0 WAVE 2 TGT 5 DOWN 12 HDG 237 LAB 12 ALT 3.2 RESC 0 IR 0` | Mỗi 250 ms | Trạng thái đầy đủ để vẽ dashboard |
+| `[MAP] 00183C0000000000 AIM 3 2` | Khi bản đồ hoặc tâm ngắm đổi, tối đa 5 lần/s | 8 hàng dạng hex + vị trí tâm ngắm |
+
+**PC → Drone:** gõ trên TeraTerm hoặc dashboard gửi. Drone tự echo (TeraTerm **tắt** Local echo). Backspace xóa, ESC hủy dòng.
 
 | Lệnh | Tác dụng | Hợp lệ ở |
 |---|---|---|
 | `HELP`, `STATUS`, `THRESH` | Hướng dẫn, trạng thái, ngưỡng | Mọi lúc |
 | `SET <T\|P\|H\|A\|G\|M>_<LOW\|HIGH> <v>` | Đổi ngưỡng | Mọi lúc |
 | `MODE STANDBY\|BATTLE`, `CHARGE`, `RESCUE` | Như các thao tác nút | Theo mode |
-| `POWER RULE\|1..5` | Chế độ bắn | BATTLE |
-| `MUTE ON\|OFF`, `ID <n>`, `MOUNT CHIPUP\|ZDOWN` | Cấu hình, tự lưu flash | STANDBY |
-| `HOME`, `CALIB`, `BLACKBOX` | La bàn + mốc độ cao, hiệu chuẩn, hộp đen | STANDBY |
-| `TRAINING ON\|OFF` | Chế độ huấn luyện | Mọi lúc |
+| `AIM <dx> <dy>`, `LOCK`, `POWER RULE\|1..5\|NEXT` | Ngắm, khóa mục tiêu, chế độ bắn | BATTLE |
+| `MUTE ON\|OFF`, `ID <1..9>`, `MOUNT …`, `ROLE …`, `WIFI …`, `SERVER …` | Cấu hình, tự lưu flash | STANDBY |
+| `HOME`, `CALIB`, `BLACKBOX` | Đăng ký lab + mốc độ cao, hiệu chuẩn la bàn, hộp đen | STANDBY |
+| `TRAINING ON\|OFF`, `DASH ON\|OFF` | Chế độ huấn luyện, dòng dữ liệu dashboard | Mọi lúc |
 | `I2CSCAN`, `I2CDUMP`, `INPUTS` | **Chỉ dùng lúc phát triển** (`ENABLE_DEV_TOOLS 0` trước khi nộp) | Mọi lúc |
 
-**Kiến trúc:** siêu vòng lặp không chặn, định thời bằng `HAL_GetTick()`. ISR chỉ ghi cờ hoặc dữ liệu (EXTI13 nút, EXTI11 IMU, USART1 RX/TX). Module ngoài không cắm thì bỏ qua, phần *(đề)* vẫn chạy đúng.
+---
+
+## 17. Dashboard Command Centre (`tools/dashboard.py`)
+
+Python + Tkinter + pyserial, chạy bằng Python trên Windows (cổng COM nằm phía Windows).
+
+| Khu vực | Nội dung |
+|---|---|
+| Thanh trên | Số hiệu drone, **MODE** chữ lớn đổi màu (xanh STANDBY, cam BATTLE, đỏ ATTACKED, xám TERMINATED), đèn mô phỏng LED2 nháy đúng nhịp, trạng thái kết nối drone / tay cầm |
+| STANDBY | 6 ô cảm biến kèm đơn vị, ô nào vượt ngưỡng tô đỏ; đồ thị 60 s gần nhất; kim la bàn và mũi tên về lab; độ cao; trạng thái tìm nơi ở; thống kê nhiệm vụ |
+| BATTLE | Bản đồ 8x8 cỡ lớn kèm tâm ngắm; thanh năng lượng; công suất / cooldown; đợt, số mục tiêu, số zombie đã hạ |
+| ATTACKED | Cả màn hình đỏ, **đếm ngược cứu hộ cỡ rất lớn**, `DOUBLE-PRESS TO RESCUE` |
+| TERMINATED | `DRONE #3 LOST — COMMS OFFLINE` khi nhận tin cuối rồi mất tín hiệu |
+| Tab hộp đen | Gửi `BLACKBOX`, hiện tổng kết và dòng thời gian sự kiện |
+| Dưới cùng | Nhật ký sự kiện, ô gõ lệnh gửi xuống drone |
+
+- Khi kết nối: gửi `DASH ON`. Khi đóng: `DASH OFF`.
+- Chọn cổng COM của drone và của tay cầm trong giao diện. Tay cầm là tùy chọn.
+
+---
+
+## 18. Kiến trúc, thời gian, thứ tự làm, nhật ký
+
+- Siêu vòng lặp không chặn, định thời bằng `HAL_GetTick()`. ISR chỉ ghi cờ hoặc dữ liệu (EXTI13 nút, EXTI11 IMU, USART1 RX/TX).
+- Module ngoài, tay cầm hay laptop không có thì bỏ qua, phần *(đề)* vẫn chạy đúng.
+- **WiFi (giai đoạn 5, tùy chọn):** drone là TCP client tới dashboard trên laptop qua hotspot (điện thoại hoặc hotspot của laptop, 2.4 GHz, WPA2). Gửi đúng các dòng như UART, gom mỗi 500 ms. Kết nối lúc khởi động, mất thì chỉ thử lại ở STANDBY mỗi 30 s, vì lệnh WiFi chặn chương trình. UART luôn chạy song song.
 
 | Hạng mục | Giá trị |
 |---|---|
@@ -283,33 +298,31 @@ Trang 1: cảm biến         Trang 2: điều hướng        Trang 3: nhiệm 
 | Debounce nút / cửa sổ double | 30–50 ms / < 500 ms |
 | LED BATTLE / ATTACKED | đảo mỗi 500 / 250 ms |
 | Giữ lật để xác nhận / cửa sổ cứu hộ | 300 ms / 10 s |
-| 5-way: đọc / giữ để đổi công suất | 30 ms / 1 s |
+| 5-way: đọc / giữ | 30 ms / 1 s |
+| IR: đọc / số mẫu ổn định / chờ giữa sự kiện | 20 ms / 3 / 3 s |
 | Lây nhiễm / nghỉ giữa hai đợt | 3 s → 1 s / 2 s |
-| Cập nhật la bàn | 100 ms |
-
-**Thứ tự làm:**
+| `[HUD]` / `[MAP]` | 250 ms / tối đa 200 ms |
+| Tay cầm: lặp nghiêng / `LINK` | 150 ms / 250 ms |
 
 | Giai đoạn | Nội dung |
 |---|---|
 | 1 | Phần *(đề)*: UART, cảm biến, ngưỡng, nút, state machine, laser, lật, cứu hộ, tự hủy |
-| 2 | OLED, LED matrix, buzzer, 5-way; console UART; cấu hình lưu flash |
-| 3 | Bản đồ + đợt + ngắm bắn + công suất; la bàn; tìm nơi ở; hộp đen |
+| 2 | LED matrix, buzzer, 5-way, IR; console UART; cấu hình lưu flash |
+| 3 | Bản đồ + đợt + ngắm + công suất; la bàn; tìm nơi ở; hộp đen; `[HUD]`/`[MAP]` |
+| 4 | Dashboard qua USB; tay cầm (firmware `ROLE CONTROLLER` + phần chuyển lệnh trong dashboard) |
+| 5 | WiFi (tùy chọn) |
 
----
-
-## 17. Nhật ký quyết định
+**Nhật ký quyết định:**
 
 | Ngày | Quyết định |
 |---|---|
-| 12/10 | Mặt chip hướng lên là bình thường (đổi được bằng `MOUNT`) |
-| 12/10 | BATTLE không gửi telemetry định kỳ; chỉ nộp `main.c` |
-| 13/10 | `[TLM]` đúng 6 trường; giữ lệnh UART `MODE`/`CHARGE`/`RESCUE` |
-| 13/10 | Câu chuyện chung theo vòng đời nhiệm vụ; mỗi module gắn vào một giai đoạn |
-| 13/10 | SOS khi ATTACKED, kêu cả khi im lặng; single press STANDBY = báo cáo trinh sát |
-| 13/10 | La bàn về phòng lab; hộp đen theo từng chuyến; thoát TERMINATED bằng RESET |
+| 12/10 | Mặt chip hướng lên là bình thường (đổi được bằng `MOUNT`); BATTLE không gửi telemetry định kỳ; chỉ nộp `main.c` |
+| 13/10 | `[TLM]` đúng 6 trường; câu chuyện theo vòng đời nhiệm vụ; SOS khi ATTACKED, kêu cả khi im lặng; single press STANDBY = báo cáo trinh sát |
+| 13/10 | La bàn về phòng lab; hộp đen theo từng chuyến; thoát TERMINATED bằng RESET; độ cao mốc `P0`, bậc 0.1 hPa |
 | 13/10 | Bắn một phát mỗi lần; vùng nổ và âm thanh theo công suất; cooldown `p` giây (trừ `p = 1`) chỉ ở chế độ chọn công suất |
-| 13/10 | Độ cao: mốc 0 m = `P0`, bậc 0.1 hPa; `HOME` đặt lại mốc |
-| 17/10 | Chiến đấu theo đợt; OLED ưu tiên theo tình huống + chữ lớn; hộp đen có tổng kết và xem trên OLED; trang kiểm tra hệ thống |
-| 20/10 | Chỉ được dùng 4 module ngoài: giữ OLED, LED matrix, buzzer, 5-way. Bỏ DIP, IR, light, sound |
-| 20/10 | Số hiệu drone lấy từ UID của chip; cấu hình bằng lệnh và lưu flash; chế độ bắn RULE mặc định, giữ giữa 5-way 1 s hoặc `POWER` để chọn công suất |
-| 20/10 | **Bỏ WiFi và bỏ phần hai drone phối hợp**: quá rối so với giá trị thêm. Một drone; board thứ hai chỉ để làm và test song song. Tìm nơi ở chỉ dùng nhiệt độ + độ ẩm |
+| 17/10 | Chiến đấu theo đợt; hộp đen có tổng kết |
+| 20/10 | Chỉ 4 module ngoài. Bỏ WiFi hai chiều và phần hai drone phối hợp vì quá rối |
+| 20/10 | **Dashboard Python trên laptop thay OLED**; UART trước, WiFi là giai đoạn cuối tùy chọn |
+| 20/10 | Bộ module: **LED matrix, buzzer, 5-way, IR**. Giữ buzzer trên board để drone tự kêu SOS |
+| 20/10 | **Board 2 = tay cầm phi công** qua USB, dashboard chuyển thành lệnh UART; giữ 5-way để drone tự đủ chức năng |
+| 20/10 | Số hiệu drone một chữ số 1–9 từ UID; cấu hình bằng lệnh, lưu flash; 5-way giữa giữ 1 s ở STANDBY = đăng ký lại phòng lab |
