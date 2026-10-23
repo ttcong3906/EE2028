@@ -23,7 +23,7 @@
  *   - Super-loop, fully non-blocking, all timing from HAL_GetTick().
  *   - ISRs only record timestamps / flags / bytes. No I2C, no blocking UART,
  *     no HAL_Delay inside interrupts.
- *   - Every external module, the controller and the laptop are optional: the
+ *   - Every external module and the laptop are optional: the
  *     drone alone still behaves exactly as the assignment specifies.
  ******************************************************************************/
 
@@ -62,11 +62,9 @@ extern uint8_t SENSOR_IO_Read(uint8_t Addr, uint8_t Reg);
 #define ENABLE_OLED             1      /* Grove OLED 128x64 (SSD1306/SSD1315) */
 #define ENABLE_FIVEWAY          1      /* Grove 5-way switch (I2C)          */
 #define ENABLE_FLASH            1      /* black box + config in flash       */
-#define ENABLE_DEV_TOOLS        1      /* I2CSCAN/I2CDUMP/INPUTS: set 0 before submission */
 #define TERMINATE_USE_STANDBY   1      /* 1: MCU Standby mode, 0: sleep loop */
 
-/* --- Defaults (changed at run time with ID / MOUNT / MUTE, saved) --- */
-#define DEFAULT_DRONE_ID        3
+#define DRONE_ID                3      /* our drone number               */
 
 /* --- External module quirks (change if the picture looks wrong) --- */
 #define MATRIX_I2C_ADDR         0x70
@@ -75,6 +73,7 @@ extern uint8_t SENSOR_IO_Read(uint8_t Addr, uint8_t Reg);
 #define OLED_COL_OFFSET         0      /* 2 for SH1106-based 1.3" modules   */
 
 /* --- Seeed Grove multi-switch (5-way tactile) --- */
+#define FIVEWAY_I2C_ADDR        0x03
 #define MS_CMD_GET_DEV_ID       0x00
 #define MS_CMD_GET_DEV_EVENT    0x01
 #define MS_VID                  0x2886
@@ -169,14 +168,12 @@ typedef struct {
 } sensors_t;
 
 typedef struct {
-    uint8_t drone_id;       /* 1..9 */
-    bool    mount_down;     /* true: Z+ points to the ground (literal spec) */
     bool    muted;
     uint32_t hiscore;       /* best mission score */
 } drone_cfg_t;
 
 static sys_state_t state = ST_STANDBY;
-static drone_cfg_t cfg = { DEFAULT_DRONE_ID, false, false, 0 };
+static drone_cfg_t cfg = { false, 0 };
 static sensors_t   sens;
 static bool        sens_valid = false;
 static uint32_t    boot_tick = 0;
@@ -213,8 +210,6 @@ static inline bool elapsed(uint32_t since, uint32_t ms)
 {
     return (uint32_t)(HAL_GetTick() - since) >= ms;
 }
-
-static inline int flip_sign(void) { return cfg.mount_down ? -1 : +1; }
 
 /* Small xorshift PRNG for the infection map (seeded from sensor noise). */
 static uint32_t rng_state = 0x2028EE28u;
@@ -399,29 +394,25 @@ static bool flash_write_tail(int k, const void *src, uint32_t len)
 }
 
 /* --- Configuration image (16 bytes) --- */
-#define CFG_MAGIC 0x34474643UL   /* "CFG4" */
+#define CFG_MAGIC 0x35474643UL   /* "CFG5" */
 
 typedef struct {
     uint32_t magic;
-    uint8_t  drone_id, mount_down, muted, rsv8;
+    uint8_t  muted, rsv[3];
     uint32_t sum;
     uint32_t hiscore;
 } cfg_image_t;
 
 static uint32_t cfg_checksum(const cfg_image_t *c)
 {
-    return 0xEE2028u ^ c->magic ^ ((uint32_t)c->drone_id << 1) ^ ((uint32_t)c->mount_down << 9) ^
-           ((uint32_t)c->muted << 17) ^ (c->hiscore * 2654435761u);
+    return 0xEE2028u ^ c->magic ^ ((uint32_t)c->muted << 17) ^ (c->hiscore * 2654435761u);
 }
 
 static void cfg_load(void)
 {
 #if ENABLE_FLASH
     const cfg_image_t *f = (const cfg_image_t *)(uintptr_t)flash_tail_addr(FLASH_PAGE_CONFIG);
-    if (f->magic == CFG_MAGIC && f->sum == cfg_checksum(f) &&
-        f->drone_id >= 1 && f->drone_id <= 9) {
-        cfg.drone_id   = f->drone_id;
-        cfg.mount_down = f->mount_down != 0;
+    if (f->magic == CFG_MAGIC && f->sum == cfg_checksum(f)) {
         cfg.muted      = f->muted != 0;
         cfg.hiscore    = f->hiscore;
     }
@@ -433,8 +424,6 @@ static bool cfg_save(void)
     cfg_image_t c;
     memset(&c, 0, sizeof(c));
     c.magic = CFG_MAGIC;
-    c.drone_id = cfg.drone_id;
-    c.mount_down = cfg.mount_down;
     c.muted = cfg.muted;
     c.hiscore = cfg.hiscore;
     c.sum = cfg_checksum(&c);
@@ -447,14 +436,17 @@ static bool cfg_save(void)
 static bool i2c1_ready = false;
 /* I2C1 kernel clock = PCLK1 = 4 MHz (MSI after reset). TIMINGR fields:
  * PRESC | SCLDEL | SDADEL | SCLH | SCLL. 100 kHz standard mode: tPRESC 0.25 us,
- * SCL low 5.0 us, high 4.0 us, data hold 0.5 us, setup 1.25 us. */
+ * SCL low 5.0 us, high 4.0 us, data hold 0.5 us, setup 1.25 us. 25 kHz: the
+ * same with PRESC = 3 (everything x4). */
 #define I2C_TIMING_100K 0x00420F13UL
-#define I2C_TIMING_50K  0x10420F13UL   /* same with PRESC = 1: everything x2 */
-#define I2C_TIMING_25K  0x30420F13UL   /* PRESC = 3: x4 */
-/* 25 kHz for the whole bus: the 5-way's MCU loses track at 50/100 kHz (tested
- * on the real module: only 25 kHz returned its ID). The matrix is fine with it. */
-static uint32_t i2c_timing = I2C_TIMING_25K;
-static int      i2c_khz = 25;
+#define I2C_TIMING_25K  0x30420F13UL
+/* Per-device speed on the shared bus: OLED and matrix at 100 kHz, the 5-way at
+ * 25 kHz (its own MCU does not answer at 50/100 kHz, tested on our module).
+ * Switching only re-programs the I2C timing register. */
+#define I2C_FAST_KHZ    100
+#define I2C_FIVEWAY_KHZ 25
+static int  i2c_khz = I2C_FIVEWAY_KHZ;
+static bool oled_ok = false;
 
 static void I2C1_Init(void)
 {
@@ -470,7 +462,7 @@ static void I2C1_Init(void)
     HAL_GPIO_Init(GPIOB, &g);
 
     hi2c1.Instance              = I2C1;
-    hi2c1.Init.Timing           = i2c_timing;
+    hi2c1.Init.Timing           = (i2c_khz >= 100) ? I2C_TIMING_100K : I2C_TIMING_25K;
     hi2c1.Init.OwnAddress1      = 0;
     hi2c1.Init.AddressingMode   = I2C_ADDRESSINGMODE_7BIT;
     hi2c1.Init.DualAddressMode  = I2C_DUALADDRESS_DISABLE;
@@ -480,24 +472,12 @@ static void I2C1_Init(void)
     i2c1_ready = (HAL_I2C_Init(&hi2c1) == HAL_OK);
 }
 
-static void i2c1_set_speed(int khz)
-{
-    i2c_khz = khz;
-    i2c_timing = khz >= 100 ? I2C_TIMING_100K : (khz >= 50 ? I2C_TIMING_50K : I2C_TIMING_25K);
-    HAL_I2C_DeInit(&hi2c1);
-    I2C1_Init();
-}
-
-/* Per-device speed on the shared bus: the displays (OLED, matrix) run at
- * i2c_fast_khz, the 5-way at the speed its probe found (25 kHz on our module).
- * Switching only re-programs the I2C timing register. */
-static int  i2c_fast_khz = 100;
-static int  fiveway_khz  = 25;
-static bool oled_ok = false;
-
 static void i2c_for(int khz)
 {
-    if (i2c_khz != khz) i2c1_set_speed(khz);
+    if (i2c_khz == khz) return;
+    i2c_khz = khz;
+    HAL_I2C_DeInit(&hi2c1);
+    I2C1_Init();
 }
 
 /* Short busy wait (roughly microseconds at 4 MHz), no SysTick needed. */
@@ -508,8 +488,6 @@ static void i2c_gap(uint32_t n)
 
 /* A slave left half-way through a transfer (e.g. after a timeout) can hold
  * SDA low forever, and then every device on the bus stops answering. */
-static uint32_t i2c_recoveries = 0;
-
 static bool i2c1_bus_stuck(void)
 {
     return __HAL_I2C_GET_FLAG(&hi2c1, I2C_FLAG_BUSY) != RESET ||
@@ -535,12 +513,11 @@ static void i2c1_recover(void)
     }
     HAL_GPIO_WritePin(GPIOB, GPIO_PIN_9, GPIO_PIN_RESET); i2c_gap(10);   /* STOP: SDA rises while SCL high */
     HAL_GPIO_WritePin(GPIOB, GPIO_PIN_9, GPIO_PIN_SET);   i2c_gap(10);
-    i2c_recoveries++;
     I2C1_Init();
 }
 
-/* After a failure: if the bus is stuck, recover it and tell the caller to
- * try once more (otherwise the device simply did not answer). */
+/* After a failure: if the bus is stuck, recover it and try once more
+ * (otherwise the device simply did not answer). */
 static bool i2c1_retry_after(bool ok, int attempt)
 {
     if (ok || attempt > 0 || !i2c1_bus_stuck()) return false;
@@ -569,49 +546,17 @@ static bool i2c1_write(uint8_t addr7, uint8_t *data, uint16_t n)
 }
 
 /* Write one command byte, then read n bytes back (Seeed register protocol).
- * The 5-way's own MCU needs a moment to prepare the answer and may stretch
- * the clock, so wait a little between the two and allow a generous timeout. */
-/* What went wrong in the last failed command read (for the diagnostics). */
-static char     i2c_diag[96] = "";
-static uint32_t i2c_cmd_timeout = I2C_TIMEOUT_MS;
-
-static const char *i2c_err_name(uint32_t e)
-{
-    if (e & HAL_I2C_ERROR_AF)      return "NACK";
-    if (e & HAL_I2C_ERROR_TIMEOUT) return "TIMEOUT";
-    if (e & HAL_I2C_ERROR_BERR)    return "BUS ERROR";
-    if (e & HAL_I2C_ERROR_ARLO)    return "ARB LOST";
-    if (e & HAL_I2C_ERROR_OVR)     return "OVERRUN";
-    return e ? "ERROR" : "BUSY";
-}
-
-/* How to do "write command, then read": the 5-way's firmware is picky, so the
- * probe tries all three and keeps the one that works. */
-enum { MS_M_STOP = 0, MS_M_STOP_WAIT, MS_M_RESTART, MS_M_COUNT };
-static const char *const ms_method_name[MS_M_COUNT] = { "stop + read", "stop + 5 ms + read", "repeated start" };
-static uint8_t ms_method = MS_M_STOP;
-
+ * The 5-way's own MCU needs a moment to prepare the answer, so wait a little
+ * between the two. */
 static bool i2c1_cmd_read(uint8_t addr7, uint8_t cmd, uint8_t *rx, uint16_t n)
 {
     for (int k = 0; i2c1_ready; k++) {
-        uint32_t t0 = HAL_GetTick();
-        const char *phase = "write cmd";
-        bool ok;
-        if (ms_method == MS_M_RESTART) {
-            phase = "write+restart+read";
-            ok = HAL_I2C_Mem_Read(&hi2c1, (uint16_t)(addr7 << 1), cmd, I2C_MEMADD_SIZE_8BIT, rx, n, i2c_cmd_timeout) == HAL_OK;
-        } else {
-            ok = HAL_I2C_Master_Transmit(&hi2c1, (uint16_t)(addr7 << 1), &cmd, 1, i2c_cmd_timeout) == HAL_OK;
-            if (ok) {
-                if (ms_method == MS_M_STOP_WAIT) HAL_Delay(5); else i2c_gap(200);
-                phase = "read data";
-                ok = HAL_I2C_Master_Receive(&hi2c1, (uint16_t)(addr7 << 1), rx, n, i2c_cmd_timeout) == HAL_OK;
-            }
+        bool ok = HAL_I2C_Master_Transmit(&hi2c1, (uint16_t)(addr7 << 1), &cmd, 1, I2C_TIMEOUT_MS) == HAL_OK;
+        if (ok) {
+            i2c_gap(200);
+            ok = HAL_I2C_Master_Receive(&hi2c1, (uint16_t)(addr7 << 1), rx, n, I2C_TIMEOUT_MS) == HAL_OK;
         }
         if (ok) return true;
-        snprintf(i2c_diag, sizeof(i2c_diag), "0x%02X cmd 0x%02X: %s failed (%s) after %lu ms, SCL %d SDA %d",
-                 addr7, cmd, phase, i2c_err_name(hi2c1.ErrorCode), (unsigned long)(HAL_GetTick() - t0),
-                 (int)HAL_GPIO_ReadPin(GPIOB, GPIO_PIN_8), (int)HAL_GPIO_ReadPin(GPIOB, GPIO_PIN_9));
         if (!i2c1_retry_after(ok, k)) return false;
     }
     return false;
@@ -630,13 +575,7 @@ static const uint8_t GL_S[8]       = {0x3C,0x66,0x60,0x3C,0x06,0x66,0x3C,0x00};
 static const uint8_t GL_O[8]       = {0x3C,0x66,0x66,0x66,0x66,0x66,0x3C,0x00};
 static const uint8_t GL_CHECK[8]   = {0x00,0x01,0x03,0x06,0x8C,0xD8,0x70,0x20};
 static const uint8_t GL_HOUSE[8]   = {0x18,0x3C,0x7E,0xFF,0x42,0x5A,0x5A,0x7E};
-static const uint8_t GL_DIGIT[10][8] = {
-    {0x3C,0x66,0x6E,0x76,0x66,0x66,0x3C,0x00}, {0x18,0x38,0x18,0x18,0x18,0x18,0x7E,0x00},
-    {0x3C,0x66,0x06,0x0C,0x30,0x60,0x7E,0x00}, {0x3C,0x66,0x06,0x1C,0x06,0x66,0x3C,0x00},
-    {0x0C,0x1C,0x3C,0x6C,0x7E,0x0C,0x0C,0x00}, {0x7E,0x60,0x7C,0x06,0x06,0x66,0x3C,0x00},
-    {0x3C,0x60,0x7C,0x66,0x66,0x66,0x3C,0x00}, {0x7E,0x06,0x0C,0x18,0x30,0x30,0x30,0x00},
-    {0x3C,0x66,0x66,0x3C,0x66,0x66,0x3C,0x00}, {0x3C,0x66,0x66,0x3E,0x06,0x0C,0x38,0x00},
-};
+static const uint8_t GL_DIGIT3[8]  = {0x3C,0x66,0x06,0x1C,0x06,0x66,0x3C,0x00};   /* drone number */
 static uint8_t mx_map(uint8_t b)
 {
 #if MATRIX_FLIP_X
@@ -651,7 +590,7 @@ static uint8_t mx_map(uint8_t b)
 static void mx_init(void)
 {
 #if ENABLE_MATRIX
-    i2c_for(i2c_fast_khz);
+    i2c_for(I2C_FAST_KHZ);
     mx_ok = i2c1_present(MATRIX_I2C_ADDR);
     if (!mx_ok) return;
     uint8_t c;
@@ -667,7 +606,7 @@ static void mx_show(const uint8_t rows[8])
 #if ENABLE_MATRIX
     if (!mx_ok) return;
     if (mx_shown_valid && memcmp(rows, mx_shown, 8) == 0) return;
-    i2c_for(i2c_fast_khz);
+    i2c_for(I2C_FAST_KHZ);
     uint8_t buf[17];
     buf[0] = 0x00;
     for (int r = 0; r < 8; r++) {
@@ -735,7 +674,7 @@ static void oled_cmd(uint8_t c)
 static void oled_init(void)
 {
 #if ENABLE_OLED
-    i2c_for(i2c_fast_khz);
+    i2c_for(I2C_FAST_KHZ);
     oled_ok = i2c1_present(OLED_I2C_ADDR);
     if (!oled_ok) return;
     static const uint8_t seq[] = {
@@ -848,7 +787,7 @@ static void oled_flush_step(void)
 {
 #if ENABLE_OLED
     if (!oled_ok || oled_dirty == 0) return;
-    i2c_for(i2c_fast_khz);
+    i2c_for(I2C_FAST_KHZ);
     for (uint8_t p = 0; p < OLED_LINES; p++) {
         if (oled_dirty & (1U << p)) {
             uint8_t col = OLED_COL_OFFSET;
@@ -1025,7 +964,7 @@ static void bz_update(void)
 }
 
 /* ============================================================================
- * 8. ON-BOARD SENSORS, ALTITUDE, COMPASS
+ * 8. ON-BOARD SENSORS, ALTITUDE
  * ==========================================================================*/
 #define LSM6DSL_ADDR         0xD4
 #define LSM6DSL_REG_D6D_SRC  0x1D
@@ -1059,14 +998,14 @@ static void sensors_init(void)
     (void)SENSOR_IO_Read(LSM6DSL_ADDR, LSM6DSL_REG_D6D_SRC);
 }
 
-/* Accelerometer in m/s^2, expressed in the drone frame chosen by MOUNT. */
+/* Accelerometer in m/s^2. Board flat, chip up: Az = +9.8 (flipped: -9.8). */
 static void accel_read(float a[3])
 {
     int16_t r[3] = {0};
     BSP_ACCELERO_AccGetXYZ(r);
     a[0] = (float)r[0] * G_MS2 / 1000.0f;
-    a[1] = (float)r[1] * G_MS2 / 1000.0f * (float)flip_sign();
-    a[2] = (float)r[2] * G_MS2 / 1000.0f * (float)flip_sign();
+    a[1] = (float)r[1] * G_MS2 / 1000.0f;
+    a[2] = (float)r[2] * G_MS2 / 1000.0f;
 }
 
 static void sensors_read(sensors_t *s)
@@ -1135,59 +1074,19 @@ static uint32_t t_fw = 0, fw_hold_t0 = 0, fw_rep_t = 0;
 static uint32_t fw_center_t0 = 0;
 static bool     fw_center_held = false;              /* hold action already done */
 
-static uint8_t fiveway_acked = 0;                    /* address that ACKs (5-way candidate) */
-static bool    fiveway_failed = false;               /* ACKs but no combination gave the ID */
-
-static bool fiveway_try_id(uint8_t a, bool verbose)
-{
-    /* The ID is one little-endian uint32 = (VID << 16) | PID, so the bytes are
-     * PID low, PID high, VID low, VID high: 02 00 86 28 (checked on the module). */
-    static const uint8_t want[4] = { MS_PID_5WAY & 0xFF, MS_PID_5WAY >> 8, MS_VID & 0xFF, MS_VID >> 8 };
-    for (int tries = 0; tries < 2; tries++) {
-        uint8_t id[4] = {0};
-        bool ok = i2c1_cmd_read(a, MS_CMD_GET_DEV_ID, id, 4);
-        if (ok && memcmp(id, want, 4) == 0) {
-            if (verbose) uart_printf("[CMD]   %3d kHz, %-18s: OK (ID %02X %02X %02X %02X)\r\n",
-                                     i2c_khz, ms_method_name[ms_method], id[0], id[1], id[2], id[3]);
-            return true;
-        }
-        if (ok) {
-            if (verbose) uart_printf("[CMD]   %3d kHz, %-18s: got %02X %02X %02X %02X (want 02 00 86 28)\r\n", i2c_khz,
-                                     ms_method_name[ms_method], id[0], id[1], id[2], id[3]);
-            snprintf(i2c_diag, sizeof(i2c_diag), "0x%02X ID read gave %02X %02X %02X %02X (want 02 00 86 28)",
-                     a, id[0], id[1], id[2], id[3]);
-            return false;                              /* answered, but not a 5-way */
-        }
-        if (tries >= 1) break;                         /* no answer twice: next combination */
-    }
-    if (verbose) uart_printf("[CMD]   %3d kHz, %-18s: %s\r\n", i2c_khz, ms_method_name[ms_method], i2c_diag);
-    return false;
-}
-
-/* Find the 5-way: an address that ACKs, then every speed x read method until
- * the device ID comes back. The working combination is kept. */
-static void fiveway_probe(bool verbose)
+/* The 5-way answers at 0x03 with its ID: one little-endian uint32
+ * (VID << 16) | PID, i.e. the bytes 02 00 86 28 (checked on the module). */
+static void fiveway_probe(void)
 {
 #if ENABLE_FIVEWAY
-    static const int speeds[3] = { 25, 50, 100 };     /* slowest first: the module needs it */
-    fiveway_acked = 0;
-    fiveway_failed = false;
-    if (i2c_khz != 25) i2c1_set_speed(25);
-    for (uint8_t a = 0x03; a <= 0x08 && !fiveway_acked; a++)
-        if (i2c1_present(a)) fiveway_acked = a;
-    if (!fiveway_acked) return;
-    for (int si = 0; si < 3; si++) {
-        if (i2c_khz != speeds[si]) i2c1_set_speed(speeds[si]);
-        for (uint8_t m = 0; m < MS_M_COUNT; m++) {
-            ms_method = m;
-            if (fiveway_try_id(fiveway_acked, verbose)) { fiveway_addr = fiveway_acked; fiveway_khz = i2c_khz; return; }
-        }
+    static const uint8_t want[4] = { MS_PID_5WAY & 0xFF, MS_PID_5WAY >> 8, MS_VID & 0xFF, MS_VID >> 8 };
+    i2c_for(I2C_FIVEWAY_KHZ);
+    if (!i2c1_present(FIVEWAY_I2C_ADDR)) return;
+    for (int tries = 0; tries < 2 && !fiveway_addr; tries++) {
+        uint8_t id[4] = {0};
+        if (i2c1_cmd_read(FIVEWAY_I2C_ADDR, MS_CMD_GET_DEV_ID, id, 4) && memcmp(id, want, 4) == 0)
+            fiveway_addr = FIVEWAY_I2C_ADDR;
     }
-    fiveway_failed = true;
-    ms_method = MS_M_STOP;
-    i2c1_set_speed(25);
-#else
-    (void)verbose;
 #endif
 }
 
@@ -1196,7 +1095,7 @@ static bool fiveway_read(uint8_t *bits)
 {
     uint8_t buf[4 + 5];
     if (!fiveway_addr) return false;
-    i2c_for(fiveway_khz);
+    i2c_for(I2C_FIVEWAY_KHZ);
     if (!i2c1_cmd_read(fiveway_addr, MS_CMD_GET_DEV_EVENT, buf, sizeof(buf))) return false;
     /* Sanity check: event word = 0 except bit 31 (has event), button bytes < 0x20
      * (raw level + click flags). Anything else means the buffer slipped. */
@@ -1324,7 +1223,7 @@ static uint32_t bb_checksum(const bb_image_t *img)
 static void bb_clear(void)
 {
     memset(&bb, 0, sizeof(bb));
-    bb.drone_id = cfg.drone_id;
+    bb.drone_id = DRONE_ID;
     bb_t0 = HAL_GetTick();
 }
 
@@ -1346,7 +1245,7 @@ static const bb_image_t *bb_flash_image(void)
 static bool bb_flash_save(void)
 {
     bb.magic = BB_MAGIC;
-    bb.drone_id = cfg.drone_id;
+    bb.drone_id = DRONE_ID;
     bb.sum = bb_checksum(&bb);
     return flash_write_tail(FLASH_PAGE_BLACKBOX, &bb, sizeof(bb));
 }
@@ -1376,7 +1275,6 @@ static bool     wave_active = false;     /* false during the AREA CLEARED pause 
 static uint32_t wave_pause_t = 0, spread_ms = WAVE_SPREAD_START_MS;
 static bool     overrun_reported = false;
 static int      aim_x = 3, aim_y = 3;
-static bool     aim_manual = false;      /* AIM/LOCK received from the controller */
 static uint32_t fire_t0 = 0;
 static bool     fire_anim = false;
 static int      fire_x = 0, fire_y = 0;
@@ -1727,13 +1625,13 @@ static void hud_boot_check(void)
     oled_linef(4, "BEST SCORE   %lu", (unsigned long)cfg.hiscore);
     oled_linef(5, "BLACK BOX    %s", bb_flash_valid ? "FOUND" : "EMPTY");
     oled_line(6, "");
-    oled_linef(7, "DRONE #%d  STARTING", cfg.drone_id);
+    oled_linef(7, "DRONE #%d  STARTING", DRONE_ID);
 }
 
 static void hud_standby(void)
 {
     if (!elapsed(boot_tick, BOOT_CHECK_MS)) { hud_boot_check(); return; }
-    oled_linef(0, "DRONE#%d STANDBY  %d/%d", cfg.drone_id, oled_page + 1, OLED_PAGES);
+    oled_linef(0, "DRONE#%d STANDBY  %d/%d", DRONE_ID, oled_page + 1, OLED_PAGES);
     if (oled_page == 0) {                                    /* sensors */
         if (sens_valid) {
             oled_linef(1, "T %5.1f C  H %4.1f %%", sens.v[S_T], sens.v[S_H]);
@@ -1821,7 +1719,7 @@ static void hud_attacked(void)
     char big[16];
     snprintf(big, sizeof(big), "%2d s", rescue_secs_left());
     oled_line(0, "!! UNDER ATTACK !!");
-    oled_linef(1, "DRONE #%d  RESCUE IN", cfg.drone_id);
+    oled_linef(1, "DRONE #%d  RESCUE IN", DRONE_ID);
     oled_big(2, 40, big);
     oled_line(4, "");
     oled_line(5, "  DOUBLE-PRESS TO");
@@ -1832,7 +1730,7 @@ static void hud_attacked(void)
 static void hud_terminated(void)
 {
     oled_line(0, "");
-    oled_linef(1, "   DRONE #%d LOST", cfg.drone_id);
+    oled_linef(1, "   DRONE #%d LOST", DRONE_ID);
     oled_line(2, "");
     oled_line(3, "  COMMS OFFLINE");
     oled_line(4, "  BLACK BOX SAVED");
@@ -1867,7 +1765,7 @@ static void matrix_render(void)
     if (state == ST_TERMINATED) { mx_show(GL_CROSS); return; }
     if (!boot_id_shown) {
         if (elapsed(boot_tick, BOOT_ID_MS)) boot_id_shown = true;
-        else { mx_show(GL_DIGIT[cfg.drone_id % 10U]); return; }
+        else { mx_show(GL_DIGIT3); return; }
     }
     /* ATTACKED has the highest priority: any animation yields immediately. */
     if (state == ST_ATTACKED) {
@@ -1948,13 +1846,13 @@ static void send_stat(void)
 {
     int p = weapon_power();
     uart_printf("[STAT] DRONE: #%d, MODE: %s, WAVE: %d, LASER: %d/10, WEAPON: %s %d/10, SHOTS: %lu, ZOMBIES DOWN: %lu, ALT: %+.1f m, SCOUTED: %d/64, NESTS: %d/%d\r\n",
-                cfg.drone_id, mode_name(state), map_live ? wave_no : 0, laser_energy,
+                DRONE_ID, mode_name(state), map_live ? wave_no : 0, laser_energy,
                 weapon_sel ? "SELECT" : "RULE", p,
                 (unsigned long)shots_fired, (unsigned long)zombies_down,
                 altitude_m(), scout_scanned(), scout_found_n, SCOUT_NESTS);
-    uart_printf("[STAT] SCORE: %lu, BEST: %lu, HABITAT: %s, MUTE: %s, MOUNT: %s, OLED: %s, LED MATRIX: %s, 5-WAY: %s\r\n",
+    uart_printf("[STAT] SCORE: %lu, BEST: %lu, HABITAT: %s, MUTE: %s, OLED: %s, LED MATRIX: %s, 5-WAY: %s\r\n",
                 (unsigned long)score, (unsigned long)cfg.hiscore, habitat_found ? "FOUND" : "SEARCHING",
-                cfg.muted ? "ON" : "OFF", cfg.mount_down ? "Z+ down" : "chip-up",
+                cfg.muted ? "ON" : "OFF",
                 oled_ok ? "OK" : "missing",
                 mx_ok ? "OK" : "missing", fiveway_addr ? "OK" : "missing");
 }
@@ -2001,7 +1899,6 @@ static void enter_battle(bool from_rescue)
     if (!from_rescue) {
         uart_write("Entering BATTLE MODE\r\n");
         flip_armed = true;
-        aim_manual = false;
         weapon_sel = false;                             /* every sortie starts in RULE mode */
         streak = 0;
         bz_fx(SND(SND_BATTLE));
@@ -2038,12 +1935,12 @@ static void enter_attacked(float az)
     led_set(true);
     t_led = t_attack_start;
     bz_play(SND(SND_SOS), true);                        /* distress beacon, ignores MUTE */
-    uart_printf("[EVT] Drone #%d flipped! The Last of EE2028\r\n", cfg.drone_id);
+    uart_printf("[EVT] Drone #%d flipped! The Last of EE2028\r\n", DRONE_ID);
 }
 
 static void rescue(void)
 {
-    uart_printf("[EVT] Drone #%d rescued! Returning to BATTLE MODE\r\n", cfg.drone_id);
+    uart_printf("[EVT] Drone #%d rescued! Returning to BATTLE MODE\r\n", DRONE_ID);
     event_text("RESCUED!", EV_EFFECT);
     bb_log(BB_RESCUED, rescue_secs_left(), 0, 0, 0);
     flip_armed = false;
@@ -2064,7 +1961,7 @@ static void terminate(void)
     bool saved = bb_flash_save();
     bz_stop();
     uart_printf("[EVT] Drone #%d: no rescue. Black box %s. Self-destructing. Cutting all communication.\r\n",
-                cfg.drone_id, saved ? "saved" : "NOT saved");
+                DRONE_ID, saved ? "saved" : "NOT saved");
     led_set(false);
     matrix_render();
     hud_render();
@@ -2106,8 +2003,8 @@ static void laser_fire(void)
     laser_energy -= p;
     shots_fired++;
 
-    /* Nobody aiming (no 5-way, no controller): lock the nearest target. */
-    if (!fiveway_addr && !aim_manual) aim_nearest();
+    /* No 5-way to aim with: lock the nearest target. */
+    if (!fiveway_addr) aim_nearest();
 
     blast_mask(p, aim_x, aim_y, blast_rows);
     int cleared = 0;
@@ -2166,11 +2063,14 @@ static void laser_charge(void)
     else bz_fx(SND(SND_CHARGE));
 }
 
-/* --- Weapon power: RULE -> 1 -> 2 -> 3 -> 4 -> 5 -> RULE --- */
-static void weapon_set(bool sel, int p)
+/* --- Weapon power (5-way centre hold): RULE -> 1 -> 2 -> 3 -> 4 -> 5 -> RULE --- */
+static void weapon_next(void)
 {
-    weapon_sel = sel;
-    if (sel) weapon_p = p;
+    if (!weapon_sel)       { weapon_sel = true; weapon_p = 1; }
+    else if (weapon_p < 5) weapon_p++;
+    else                   weapon_sel = false;
+    bool sel = weapon_sel;
+    int  p   = weapon_p;
     char t[24];
     if (sel) {
         uart_printf("[EVT] Weapon: power %d/10 (%s), cooldown %d s\r\n", p, power_name(p), p >= 2 ? p : 0);
@@ -2184,13 +2084,6 @@ static void weapon_set(bool sel, int p)
     bb_log(BB_WEAPON, sel, weapon_power(), 0, 0);
     bz_fx(SND(SND_REPORT));
     laser_try_fire();
-}
-
-static void weapon_next(void)
-{
-    if (!weapon_sel)        weapon_set(true, 1);
-    else if (weapon_p < 5)  weapon_set(true, weapon_p + 1);
-    else                    weapon_set(false, 0);
 }
 
 static void aim_move(int dx, int dy)
@@ -2209,12 +2102,11 @@ static void target_lock(void)
     event_text("TARGET LOCKED", EV_NORMAL);
 }
 
-/* --- Altitude zero here (5-way centre hold / HOME) --- */
-static void altitude_rezero(bool from_cmd)
+/* --- Altitude zero here (5-way centre hold in STANDBY) --- */
+static void altitude_rezero(void)
 {
     altitude_zero(BSP_PSENSOR_ReadPressure());
-    if (from_cmd) uart_printf("[CMD] OK altitude zero at %.2f hPa\r\n", p0_hpa);
-    else          uart_printf("[EVT] Altitude zero reset at %.2f hPa\r\n", p0_hpa);
+    uart_printf("[EVT] Altitude zero reset at %.2f hPa\r\n", p0_hpa);
     event_text("ALTITUDE ZERO SET", EV_NORMAL);
     bz_fx(SND(SND_MODE));
 }
@@ -2225,7 +2117,7 @@ static void scout_report(void)
     uint32_t s = (HAL_GetTick() - boot_tick) / 1000U;
     uart_printf("[REPORT] Drone #%d: flight %02lu:%02lu, alt %+.1f m, area scanned %d/64, nests found %d/%d, "
                 "pings left %d/%d, score %lu, habitat found %lux, zombies down %lu, shots %lu\r\n",
-                cfg.drone_id, (unsigned long)(s / 60U), (unsigned long)(s % 60U), altitude_m(),
+                DRONE_ID, (unsigned long)(s / 60U), (unsigned long)(s % 60U), altitude_m(),
                 scout_scanned(), scout_found_n, SCOUT_NESTS, pings_left, SONAR_PINGS, (unsigned long)score,
                 (unsigned long)habitat_count, (unsigned long)zombies_down, (unsigned long)shots_fired);
 }
@@ -2273,7 +2165,7 @@ static void fiveway_center_short(void)
 
 static void fiveway_center_hold(void)
 {
-    if (state == ST_STANDBY) altitude_rezero(false);
+    if (state == ST_STANDBY) altitude_rezero();
     else if (state == ST_BATTLE) weapon_next();
 }
 
@@ -2429,7 +2321,7 @@ static void battle_tick(void)
         flip_irq = false;
         t_flip_poll = HAL_GetTick();
         float a[3];
-        accel_read(a);                                   /* already in the MOUNT frame */
+        accel_read(a);                                   
         float lim = FLIP_G_FRACTION * G_MS2;
         if (!flip_armed) {
             if (a[2] > lim) flip_armed = true;
@@ -2460,23 +2352,19 @@ static void attacked_tick(void)
     }
     if (elapsed(t_attack_msg, ATTACK_MSG_MS)) {
         t_attack_msg += ATTACK_MSG_MS;
-        uart_printf("[ATTACK] Drone #%d Was Attacked! Rescue in %d s\r\n", cfg.drone_id, rescue_secs_left());
+        uart_printf("[ATTACK] Drone #%d Was Attacked! Rescue in %d s\r\n", DRONE_ID, rescue_secs_left());
     }
 }
 
 /* ============================================================================
- * 16. UART COMMAND INTERFACE
+ * 15. UART COMMAND INTERFACE
  * ==========================================================================*/
 static void cmd_help(void)
 {
     uart_write("[CMD] Commands:\r\n"
                "[CMD]   HELP | STATUS | THRESH | SET <T|P|H|A|G|M>_<LOW|HIGH> <v>\r\n"
                "[CMD]   MODE STANDBY|BATTLE | CHARGE | RESCUE | PING\r\n"
-               "[CMD]   battle:  AIM <dx> <dy> (crosshair) | LOCK | POWER RULE|1..5|NEXT\r\n"
-               "[CMD]   standby: AIM <dx> <dy> (fly the scout) | HOME | BLACKBOX | ID <1..9> | MOUNT CHIPUP|ZDOWN | MUTE ON|OFF | HISCORE RESET\r\n"
-#if ENABLE_DEV_TOOLS
-               "[CMD]   dev: I2CSCAN | I2CDUMP <addr> <cmd> <n> | I2CSPEED 100|50|25 | FIVEWAY | INPUTS | MAG\r\n"
-#endif
+               "[CMD]   standby: BLACKBOX | MUTE ON|OFF | HISCORE RESET\r\n"
                );
 }
 
@@ -2547,56 +2435,6 @@ static void bb_print(const bb_image_t *img, const char *source)
     }
 }
 
-#if ENABLE_DEV_TOOLS
-static void i2c_scan(void)
-{
-    char buf[200] = "[EVT] I2C bus:";
-    int found = 0;
-    if (i2c1_ready && i2c1_bus_stuck()) {
-        i2c1_recover();
-        strcat(buf, " (was stuck, recovered)");
-    }
-    if (i2c1_ready) {
-        for (uint8_t a = 0x03; a <= 0x77; a++) {
-            if (HAL_I2C_IsDeviceReady(&hi2c1, (uint16_t)(a << 1), 1, 5) == HAL_OK) {
-                char t[8];
-                snprintf(t, sizeof(t), " 0x%02X", a);
-                if (strlen(buf) + strlen(t) < sizeof(buf) - 3) strcat(buf, t);
-                found++;
-            }
-        }
-    }
-    if (!found) {
-        char t[64];
-        snprintf(t, sizeof(t), " (no devices; SCL %d SDA %d, 1 = idle)",
-                 (int)HAL_GPIO_ReadPin(GPIOB, GPIO_PIN_8), (int)HAL_GPIO_ReadPin(GPIOB, GPIO_PIN_9));
-        strcat(buf, t);
-    }
-    if (i2c_recoveries) {
-        char t[32];
-        snprintf(t, sizeof(t), " [recoveries: %lu]", (unsigned long)i2c_recoveries);
-        strcat(buf, t);
-    }
-    strcat(buf, "\r\n");
-    uart_write(buf);
-}
-
-static void i2c_dump(uint8_t addr, uint8_t cmd, uint8_t n)
-{
-    uint8_t rx[32] = {0};
-    if (n > sizeof(rx)) n = sizeof(rx);
-    i2c_cmd_timeout = 200;                               /* patient, for diagnosis */
-    bool ok = i2c1_cmd_read(addr, cmd, rx, n);
-    i2c_cmd_timeout = I2C_TIMEOUT_MS;
-    if (!ok) { uart_printf("[CMD] ERR %s\r\n", i2c_diag); return; }
-    char buf[140];
-    int k = snprintf(buf, sizeof(buf), "[CMD] 0x%02X cmd 0x%02X ->", addr, cmd);
-    for (uint8_t i = 0; i < n && k < (int)sizeof(buf) - 6; i++) k += snprintf(buf + k, sizeof(buf) - (size_t)k, " %02X", rx[i]);
-    snprintf(buf + k, sizeof(buf) - (size_t)k, "\r\n");
-    uart_write(buf);
-}
-#endif
-
 static bool parse_on_off(const char *verb, const char *arg, bool *on)
 {
     if (arg && !strcmp(arg, "ON"))  { *on = true;  return true; }
@@ -2649,36 +2487,8 @@ static void cmd_exec(char *line)
     if (!strcmp(verb, "PING"))   { if (state == ST_STANDBY)  action_single(); else cmd_not_allowed(); return; }
     if (!strcmp(verb, "RESCUE")) { if (state == ST_ATTACKED) rescue();       else cmd_not_allowed(); return; }
 
-    /* --- Battle: aiming and weapon (5-way or pilot controller) --- */
-    if (!strcmp(verb, "AIM")) {
-        if (state != ST_BATTLE && state != ST_STANDBY) { cmd_not_allowed(); return; }
-        if (!arg1 || !arg2) { uart_write("[CMD] ERR usage: AIM <dx> <dy>\r\n"); return; }
-        int dx = atoi(arg1), dy = atoi(arg2);
-        dx = dx > 0 ? 1 : (dx < 0 ? -1 : 0);
-        dy = dy > 0 ? 1 : (dy < 0 ? -1 : 0);
-        if (state == ST_STANDBY) { scout_move(dx, dy); return; }
-        aim_manual = true;
-        aim_move(dx, dy);
-        return;                                          /* silent: may repeat fast */
-    }
-    if (!strcmp(verb, "LOCK")) {
-        if (state != ST_BATTLE) { cmd_not_allowed(); return; }
-        aim_manual = true;
-        target_lock();
-        return;
-    }
-    if (!strcmp(verb, "POWER")) {
-        if (state != ST_BATTLE) { cmd_not_allowed(); return; }
-        if (arg1 && !strcmp(arg1, "NEXT"))      weapon_next();
-        else if (arg1 && !strcmp(arg1, "RULE")) weapon_set(false, 0);
-        else if (arg1 && arg1[0] >= '1' && arg1[0] <= '5' && arg1[1] == '\0') weapon_set(true, arg1[0] - '0');
-        else uart_write("[CMD] ERR usage: POWER RULE | POWER 1..5 | POWER NEXT\r\n");
-        return;
-    }
-
     /* --- Standby only: configuration (saved to flash) and tools --- */
-    bool is_cfg = !strcmp(verb, "MUTE") || !strcmp(verb, "ID") || !strcmp(verb, "MOUNT") || !strcmp(verb, "HISCORE");
-    bool is_sb  = is_cfg || !strcmp(verb, "HOME") || !strcmp(verb, "BLACKBOX");
+    bool is_sb = !strcmp(verb, "MUTE") || !strcmp(verb, "HISCORE") || !strcmp(verb, "BLACKBOX");
     if (is_sb && state != ST_STANDBY) { cmd_not_allowed(); return; }
 
     if (!strcmp(verb, "MUTE")) {
@@ -2689,78 +2499,17 @@ static void cmd_exec(char *line)
         cmd_cfg_saved(on ? "MUTE ON" : "MUTE OFF");
         return;
     }
-    if (!strcmp(verb, "ID")) {
-        if (!arg1 || arg1[0] < '1' || arg1[0] > '9' || arg1[1] != '\0') { uart_write("[CMD] ERR usage: ID <1..9>\r\n"); return; }
-        cfg.drone_id = (uint8_t)(arg1[0] - '0');
-        char t[24];
-        snprintf(t, sizeof(t), "Drone #%d", cfg.drone_id);
-        cmd_cfg_saved(t);
-        boot_id_shown = false; boot_tick = HAL_GetTick();        /* show the new number */
-        return;
-    }
-    if (!strcmp(verb, "MOUNT")) {
-        if (arg1 && !strcmp(arg1, "CHIPUP"))     cfg.mount_down = false;
-        else if (arg1 && !strcmp(arg1, "ZDOWN")) cfg.mount_down = true;
-        else { uart_write("[CMD] ERR usage: MOUNT CHIPUP | MOUNT ZDOWN\r\n"); return; }
-        cmd_cfg_saved(cfg.mount_down ? "MOUNT Z+ down" : "MOUNT chip-up");
-        return;
-    }
     if (!strcmp(verb, "HISCORE")) {
         if (!arg1 || strcmp(arg1, "RESET")) { uart_write("[CMD] ERR usage: HISCORE RESET\r\n"); return; }
         cfg.hiscore = 0;
         cmd_cfg_saved("HISCORE 0");
         return;
     }
-    if (!strcmp(verb, "HOME")) { altitude_rezero(true); return; }
     if (!strcmp(verb, "BLACKBOX")) {
         if (bb_flash_valid) bb_print(bb_flash_image(), "Recovered from flash (drone self-destructed)");
         else                bb_print(&bb, "Last sortie (RAM)");
         return;
     }
-
-#if ENABLE_DEV_TOOLS
-    if (!strcmp(verb, "I2CSCAN")) { i2c_scan(); return; }
-    if (!strcmp(verb, "I2CSPEED")) {
-        int k = arg1 ? atoi(arg1) : 0;
-        uint32_t t = k == 100 ? I2C_TIMING_100K : (k == 50 ? I2C_TIMING_50K : (k == 25 ? I2C_TIMING_25K : 0));
-        if (!t) { uart_write("[CMD] ERR usage: I2CSPEED 100 | 50 | 25   (kHz, OLED + matrix)\r\n"); return; }
-        (void)t;
-        i2c_fast_khz = k;
-        i2c_for(k);
-        mx_shown_valid = false; oled_dirty = 0xFF;
-        uart_printf("[CMD] OK displays (OLED, matrix) at %d kHz, 5-way stays at %d kHz\r\n", k, fiveway_khz);
-        return;
-    }
-    if (!strcmp(verb, "FIVEWAY")) {
-        uart_write("[CMD] 5-way probe: every speed x read method\r\n");
-        fiveway_addr = 0;
-        fiveway_probe(true);
-        if (fiveway_addr) uart_printf("[CMD] OK 5-way at 0x%02X: %d kHz, %s\r\n", fiveway_addr, i2c_khz, ms_method_name[ms_method]);
-        else uart_printf("[CMD] 5-way not working (%s)\r\n", fiveway_acked ? "address ACKs, ID read fails" : "no answer at 0x03..0x08");
-        return;
-    }
-    if (!strcmp(verb, "MAG")) {                          /* magnetometer debugging */
-        int16_t m[3] = {0};
-        BSP_MAGNETO_GetXYZ(m);
-        uart_printf("[CMD] MAG X %.1f Y %.1f Z %.1f uT, |M| %.1f uT\r\n", m[0] / 10.0f, m[1] / 10.0f, m[2] / 10.0f,
-                    sqrtf((float)m[0] * m[0] + (float)m[1] * m[1] + (float)m[2] * m[2]) / 10.0f);
-        return;
-    }
-    if (!strcmp(verb, "INPUTS")) {
-        uint8_t f = 0;
-        bool fok = fiveway_read(&f);
-        uart_printf("[CMD] 5-WAY@0x%02X %s pressed idx0..4 = %d%d%d%d%d\r\n",
-                    fiveway_addr, fok ? "ok" : "--", f & 1, (f >> 1) & 1, (f >> 2) & 1, (f >> 3) & 1, (f >> 4) & 1);
-        return;
-    }
-    if (!strcmp(verb, "I2CDUMP")) {
-        char *arg3 = strtok(NULL, " \t");
-        if (!arg1 || !arg2) { uart_write("[CMD] ERR usage: I2CDUMP 03 00 4\r\n"); return; }
-        i2c_dump((uint8_t)strtoul(arg1, NULL, 16), (uint8_t)strtoul(arg2, NULL, 16),
-                 arg3 ? (uint8_t)strtoul(arg3, NULL, 10) : 4);
-        return;
-    }
-#endif
 
     uart_printf("[CMD] ERR unknown command '%s' (type HELP)\r\n", verb);
 }
@@ -2797,7 +2546,7 @@ static void uart_poll_commands(void)
 }
 
 /* ============================================================================
- * 17. LOW-LEVEL INIT
+ * 16. LOW-LEVEL INIT
  * ==========================================================================*/
 static void GPIO_IT_Init(void)
 {
@@ -2851,7 +2600,7 @@ static void UART1_Init(void)
 }
 
 /* ============================================================================
- * 18. MAIN
+ * 17. MAIN
  * ==========================================================================*/
 static void app_init(void)
 {
@@ -2866,22 +2615,13 @@ static void app_init(void)
     mx_init();
     oled_init();
     buzzer_init();
-    fiveway_probe(false);
+    fiveway_probe();
     GPIO_IT_Init();
 
-    uart_printf("\r\n=== Drone #%d online === mount: %s, silent: %s\r\n", cfg.drone_id,
-                cfg.mount_down ? "Z+ down" : "chip-up", cfg.muted ? "ON" : "OFF");
-    if (fiveway_addr)
-        uart_printf("[EVT] 5-way at 0x%02X: %d kHz, %s\r\n", fiveway_addr, i2c_khz, ms_method_name[ms_method]);
-    else if (fiveway_acked)
-        uart_printf("[EVT] 5-way diag: device at 0x%02X answers its address but no speed/read method gave the ID. "
-                    "Last: %s. Type FIVEWAY for details\r\n", fiveway_acked, i2c_diag);
+    uart_printf("\r\n=== Drone #%d online === silent: %s\r\n", DRONE_ID, cfg.muted ? "ON" : "OFF");
     uart_printf("[EVT] System check: sensors %s, LED matrix %s, OLED %s, 5-way %s. Type HELP for commands.\r\n",
                 sensors_ok ? "OK" : "FAIL", mx_ok ? "OK" : "NOT FOUND", oled_ok ? "OK" : "NOT FOUND",
                 fiveway_addr ? "OK" : "NOT FOUND");
-#if ENABLE_DEV_TOOLS
-    i2c_scan();
-#endif
 
     /* Altitude zero: average of 10 readings */
     float sum = 0.0f;
@@ -2939,8 +2679,8 @@ static void app_loop(void)
             oled_init();
             if (oled_ok) uart_write("[EVT] OLED connected\r\n");
         }
-        if (!fiveway_addr && !fiveway_failed && ENABLE_FIVEWAY) {   /* newly plugged in */
-            fiveway_probe(false);
+        if (!fiveway_addr && ENABLE_FIVEWAY) {                     /* newly plugged in */
+            fiveway_probe();
             if (fiveway_addr) uart_printf("[EVT] 5-way switch connected at 0x%02X\r\n", fiveway_addr);
         }
     }

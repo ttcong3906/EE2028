@@ -74,11 +74,10 @@ Ký hiệu *(đề)* = yêu cầu bắt buộc của đề bài. **Drone không 
 
 | Mục | Mặc định | Đổi bằng |
 |---|---|---|
-| **Số hiệu drone** | **3** (Drone #3) | `ID <1..9>` |
-| **Kiểu lắp** | Mặt chip hướng lên là bình thường | `MOUNT CHIPUP\|ZDOWN` (`ZDOWN` = Z+ hướng xuống đất, đúng chữ đề) |
 | **Im lặng** | Tắt | `MUTE ON\|OFF` (SOS vẫn kêu) |
 | **Kỷ lục điểm** | 0 | Tự lưu khi phá kỷ lục; `HISCORE RESET` để xóa |
 
+- Cố định trong code: drone **#3**, mặt chip hướng lên là bình thường.
 - Lưu vào **trang flash áp chót** (có mã kiểm tra), reset hay mất điện không mất. Mỗi lệnh tự lưu, trả `[CMD] OK … (saved)`.
 - Chỉ đổi được ở **STANDBY**.
 
@@ -88,8 +87,8 @@ Ký hiệu *(đề)* = yêu cầu bắt buộc của đề bài. **Drone không 
 
 | Bước | Làm gì | Matrix / OLED / buzzer | UART |
 |---|---|---|---|
-| 1 | Đọc cấu hình | | `=== Drone #3 online === mount: chip-up, silent: OFF` |
-| 2 | Chờ 300 ms cho các module Grove khởi động, gỡ kẹt bus I2C nếu cần, dò module | | `[EVT] 5-way at 0x03: 25 kHz, stop + read` |
+| 1 | Đọc cấu hình | | `=== Drone #3 online === silent: OFF` |
+| 2 | Chờ 300 ms cho các module Grove khởi động, gỡ kẹt bus I2C nếu cần, dò module (5-way ở 25 kHz, kiểm tra mã ID) | | |
 | 3 | Báo kết quả | OLED: trang **SYSTEM CHECK** 2.5 s (cảm biến, matrix, 5-way, hộp đen, kỷ lục) | `[EVT] System check: sensors OK, LED matrix OK, OLED OK, 5-way OK` |
 | 4 | Lưu `P0` (trung bình 10 lần đọc) làm mốc độ cao 0 m | | `[EVT] Altitude zero at 1008.52 hPa` |
 | 5 | Nếu flash còn hộp đen của lần bay trước | | `[EVT] Black box of Drone #3 recovered (18 records). Type BLACKBOX to read` |
@@ -108,7 +107,7 @@ Ký hiệu *(đề)* = yêu cầu bắt buộc của đề bài. **Drone không 
 | **Tìm nơi ở** | Nhiệt độ 20–32 °C **và** độ ẩm 40–70 %RH liên tục 3 s (đề: humidity "used to find new human habitats") | Matrix: ngôi nhà 2 s; chuông | `[EVT] Possible human habitat found: T 26.1 C, H 58 %RH` / `[EVT] Habitat conditions lost` |
 | 5-way 4 hướng | Lái drone trinh sát 1 ô (giữ thì đi liên tục) | | |
 | 5-way giữa **nhấn ngắn** | Sang trang OLED kế tiếp (1 → 2 → 3 → 4 → 1) | | |
-| 5-way giữa **giữ 1 s** | Đặt lại mốc độ cao 0 m tại chỗ (như lệnh `HOME`) | Hai tiếng bíp | `[EVT] Altitude zero reset at 1008.40 hPa` |
+| 5-way giữa **giữ 1 s** | Đặt lại mốc độ cao 0 m tại chỗ  | Hai tiếng bíp | `[EVT] Altitude zero reset at 1008.40 hPa` |
 
 - Lật board ở STANDBY không có tác dụng. Ở STANDBY không có nhạc nền.
 - Khoảng tìm nơi ở nới rộng hơn chuẩn tiện nghi ASHRAE (khoảng 30–60 %RH) để demo được trong phòng lab có máy lạnh ở Singapore.
@@ -131,7 +130,7 @@ Dòng cuối mỗi trang hiện sự kiện vừa xảy ra trong 2 s (`NEST FOUN
 **Bản đồ:**
 - Matrix 8x8 là vùng phía trước drone, **cùng tọa độ với bản đồ BATTLE** (hàng 0 xa nhất, hàng 7 gần nhất).
 - Mỗi lần vào STANDBY là một **khu vực mới**: toàn bộ phủ sương mù, giấu ngẫu nhiên **3 ổ zombie** ở hàng 0–5, có **3 lần ping**. Ngẫu nhiên được gieo từ nhiễu cảm biến nên mỗi lần bật nguồn khác nhau.
-- Drone trinh sát xuất phát ở (3,7). Di chuyển 1 ô mỗi lần bằng 5-way hoặc lệnh `AIM <dx> <dy>`.
+- Drone trinh sát xuất phát ở (3,7). Di chuyển 1 ô mỗi lần bằng 5-way.
 - Mỗi khi tới một ô, **vùng 3x3 quanh drone** được quét. Thấy ổ thì báo và bíp; tìm đủ 3 ổ thì `[EVT] Scouting complete: all 3 nests located` kèm giai điệu.
 
 | Trên matrix | Nghĩa |
@@ -195,7 +194,7 @@ BATTLE không gửi telemetry định kỳ, chỉ gửi sự kiện.
 - Năng lượng theo đơn vị **1/10**, số nguyên 0–10. Mỗi single press **+3/10** *(đề)*.
 - **Chế độ bắn:**
   - **RULE** (mặc định, đúng đề): mỗi phát `p = 5`, đủ năng lượng là tự bắn ngay, **không cooldown** *(đề)*.
-  - **SEL** (5-way giữa giữ 1 s, hoặc lệnh `POWER 1..5`; `POWER RULE` để về đúng đề): `p` = 1–5. Sau mỗi phát có **cooldown `p` giây**, riêng `p = 1` không có. Trong lúc cooldown vẫn nạp được. Hết cooldown mà đủ năng lượng thì tự bắn ngay.
+  - **SEL** (5-way giữa giữ 1 s, đi vòng RULE → 1 → … → 5 → RULE): `p` = 1–5. Sau mỗi phát có **cooldown `p` giây**, riêng `p = 1` không có. Trong lúc cooldown vẫn nạp được. Hết cooldown mà đủ năng lượng thì tự bắn ngay.
 - Tự bắn khi năng lượng ≥ `p`, mỗi lần **một phát**, trừ `p`. Năng lượng thừa để dành, tối đa 10/10.
 - Mỗi lần vào BATTLE (chuyến xuất kích mới) chế độ bắn về **RULE**. Được cứu thì giữ nguyên chế độ đang dùng.
 
@@ -266,7 +265,7 @@ BATTLE không gửi telemetry định kỳ, chỉ gửi sự kiện.
 
 ## 14. Phát hiện lật *(đề)*
 
-- **Kiểu lắp** theo cấu hình `MOUNT` (mục 4).
+- Board nằm ngửa, mặt chip hướng lên: `Az ≈ +9.8 m/s²`. Lật úp: `Az ≈ −9.8`.
 - Chức năng **6D** trong LSM6DSL (ngưỡng 60°) báo ngắt INT1 khi hướng thay đổi. Main loop xác nhận bằng `Az` và phải **giữ lật ≥ 300 ms**. Dự phòng: đọc `Az` mỗi 100 ms.
 - "Lật" khi trọng lực trên trục Z theo chiều ngược lại lớn hơn 0.5 g.
 - LSM6DSL là IMU chứa cả gyroscope và accelerometer. Đó là cách hiểu câu "gyroscope detects upside-down" của đề: gyro chỉ đo tốc độ quay nên không tự biết được úp hay ngửa.
@@ -313,11 +312,10 @@ BATTLE không gửi telemetry định kỳ, chỉ gửi sự kiện.
 | `HELP`, `STATUS`, `THRESH` | Hướng dẫn, trạng thái (có điểm và kỷ lục), ngưỡng | Mọi lúc |
 | `SET <T\|P\|H\|A\|G\|M>_<LOW\|HIGH> <v>` | Đổi ngưỡng | Mọi lúc |
 | `MODE STANDBY\|BATTLE`, `CHARGE`, `RESCUE`, `PING` | Như các thao tác nút | Theo mode |
-| `AIM <dx> <dy>` | STANDBY: lái drone trinh sát. BATTLE: dời tâm ngắm | STANDBY, BATTLE |
-| `LOCK`, `POWER RULE\|1..5\|NEXT` | Khóa mục tiêu, chế độ bắn | BATTLE |
-| `MUTE ON\|OFF`, `ID <1..9>`, `MOUNT CHIPUP\|ZDOWN`, `HISCORE RESET` | Cấu hình, tự lưu flash | STANDBY |
-| `HOME`, `BLACKBOX` | Đặt lại mốc độ cao, in hộp đen | STANDBY |
-| `I2CSCAN`, `I2CDUMP`, `I2CSPEED`, `FIVEWAY`, `INPUTS`, `MAG` | **Chỉ dùng lúc phát triển** (`ENABLE_DEV_TOOLS 0` trước khi nộp) | Mọi lúc |
+| `MUTE ON\|OFF`, `HISCORE RESET` | Cấu hình, tự lưu flash | STANDBY |
+| `BLACKBOX` | In hộp đen | STANDBY |
+
+Lái, ngắm, khóa mục tiêu và đổi công suất chỉ làm bằng 5-way.
 
 ---
 
@@ -327,7 +325,8 @@ BATTLE không gửi telemetry định kỳ, chỉ gửi sự kiện.
 - OLED dùng framebuffer: chữ được so với bản cũ, chỉ trang nào đổi mới được gửi, mỗi vòng lặp gửi tối đa một trang (128 byte ≈ 12 ms ở 100 kHz).
 - Module ngoài không có thì bỏ qua, phần *(đề)* vẫn chạy đúng. Ở STANDBY, module chưa thấy được dò lại mỗi 2 s (cắm sau vẫn nhận). 5-way không trả lời 10 lần liên tiếp thì coi như đã rút.
 - Bus I2C bị kẹt (SDA bị giữ thấp sau một lần timeout) thì tự gỡ: 9 xung SCL + STOP rồi khởi tạo lại I2C1, và thử lại giao dịch đó một lần.
-- Mã ID của 5-way là một số 32-bit little-endian `(VID << 16) | PID`, tức các byte `02 00 86 28`.
+- 5-way chỉ trả lời ở **25 kHz**; OLED và matrix chạy 100 kHz. Firmware đổi tốc độ bus theo từng module.
+- Mã ID của 5-way là một số 32-bit little-endian `(VID << 16) | PID`, tức các byte `02 00 86 28`. Lúc dò: thấy địa chỉ 0x03 trả lời thì đọc ID (thử 2 lần) và so khớp.
 
 | Hạng mục | Giá trị |
 |---|---|
@@ -353,7 +352,7 @@ BATTLE không gửi telemetry định kỳ, chỉ gửi sự kiện.
 
 | Ngày | Quyết định |
 |---|---|
-| 12/10 | Mặt chip hướng lên là bình thường (đổi được bằng `MOUNT`); BATTLE không gửi telemetry định kỳ; chỉ nộp `main.c` |
+| 12/10 | Mặt chip hướng lên là bình thường; BATTLE không gửi telemetry định kỳ; chỉ nộp `main.c` |
 | 13/10 | `[TLM]` đúng 6 trường; câu chuyện theo vòng đời nhiệm vụ; SOS khi ATTACKED, kêu cả khi im lặng |
 | 13/10 | Hộp đen theo từng chuyến; thoát TERMINATED bằng RESET; độ cao mốc `P0`, bậc 0.1 hPa |
 | 13/10 | Bắn một phát mỗi lần; vùng nổ và âm thanh theo công suất; cooldown `p` giây (trừ `p = 1`) chỉ ở chế độ chọn công suất |
@@ -363,4 +362,5 @@ BATTLE không gửi telemetry định kỳ, chỉ gửi sự kiện.
 | 20/10 | Không dùng màn hình laptop → bỏ dashboard; bộ module LED matrix, OLED, buzzer, 5-way |
 | 23/10 | **Chỉ một board**: bỏ tay cầm, UART4 và lệnh `ROLE` |
 | 23/10 | Single press ở STANDBY = **sonar có tiếng vọng** (3 lần mỗi khu vực, không mở ô, ping dư thành năng lượng) kèm báo cáo trinh sát |
-| 23/10 | **Điểm, hệ số nhân, kỷ lục lưu flash**; **nhịp tim** nhanh dần theo mức nguy hiểm ở BATTLE; `ENABLE_DEV_TOOLS 0` khi nộp |
+| 23/10 | **Điểm, hệ số nhân, kỷ lục lưu flash**; **nhịp tim** nhanh dần theo mức nguy hiểm ở BATTLE |
+| 23/10 | Rút gọn code: bỏ lệnh debug I2C và phần dò 9 tổ hợp tốc độ/cách đọc (5-way cố định 25 kHz); bỏ cấu hình `ID`, `MOUNT` (cố định #3, chip hướng lên); bỏ lệnh `AIM`, `LOCK`, `POWER`, `HOME` |
