@@ -320,7 +320,7 @@ Lái, ngắm, khóa mục tiêu và đổi công suất chỉ làm bằng 5-way.
 
 ---
 
-## 18. Kiến trúc, thời gian, chia việc, nhật ký
+## 18. Kiến trúc, thời gian
 
 - Siêu vòng lặp không chặn, định thời bằng `HAL_GetTick()`. ISR chỉ ghi cờ hoặc dữ liệu (EXTI13 nút, EXTI11 IMU, USART1 RX/TX).
 - OLED dùng framebuffer: chữ được so với bản cũ, chỉ trang nào đổi mới được gửi, mỗi vòng lặp gửi tối đa một trang (128 byte ≈ 12 ms ở 100 kHz).
@@ -342,29 +342,3 @@ Lái, ngắm, khóa mục tiêu và đổi công suất chỉ làm bằng 5-way.
 | Sonar: vòng sóng / tiếng vọng / vạch hướng | 4 × 90 ms / 150 + 100·d ms / 0.7 s |
 | Nhịp tim | 1200 ms → 350 ms theo số ô nhiễm |
 | Lây nhiễm / nghỉ giữa hai đợt | 3 s → 1 s / 2 s |
-
-**Chia việc:**
-
-| Người | Phần |
-|---|---|
-| A | Phần *(đề)*: UART, cảm biến, ngưỡng, nút, state machine, laser, lật, cứu hộ, tự hủy; hộp đen; cấu hình flash |
-| B | 4 module: OLED (driver + các trang), LED matrix, buzzer (âm thanh + nhạc), 5-way; trinh sát + sonar; bản đồ BATTLE; điểm và kỷ lục |
-| Cả hai | Giai đoạn đầu (UART + console); thống nhất các hàm dùng chung (state, sự kiện) trước khi tách ra |
-
-**Nhật ký quyết định:**
-
-| Ngày | Quyết định |
-|---|---|
-| 12/10 | Mặt chip hướng lên là bình thường; BATTLE không gửi telemetry định kỳ; chỉ nộp `main.c` |
-| 13/10 | `[TLM]` đúng 6 trường; câu chuyện theo vòng đời nhiệm vụ; SOS khi ATTACKED, kêu cả khi im lặng |
-| 13/10 | Hộp đen theo từng chuyến; thoát TERMINATED bằng RESET; độ cao mốc `P0`, bậc 0.1 hPa |
-| 13/10 | Bắn một phát mỗi lần; vùng nổ và âm thanh theo công suất; cooldown `p` giây (trừ `p = 1`) chỉ ở chế độ chọn công suất |
-| 17/10 | Chiến đấu theo đợt; hộp đen có tổng kết; OLED ưu tiên theo tình huống; trang kiểm tra hệ thống |
-| 20/10 | Chỉ 4 module ngoài. Drone mặc định **#3**; cấu hình bằng lệnh, lưu flash. Bỏ TRAINING. I2C đúng chuẩn; 5-way chỉ chạy 25 kHz, ID little-endian |
-| 20/10 | Bỏ la bàn (cần hiệu chuẩn, dễ nhiễu từ) → bản đồ trinh sát: sương mù, 3 ổ ẩn, quét 3x3, ổ đã tìm thấy thành cụm 5 ô ở đợt 1 |
-| 20/10 | Không dùng màn hình laptop → bỏ dashboard; bộ module LED matrix, OLED, buzzer, 5-way |
-| 23/10 | **Chỉ một board**: bỏ tay cầm, UART4 và lệnh `ROLE` |
-| 23/10 | Single press ở STANDBY = **sonar có tiếng vọng** (3 lần mỗi khu vực, không mở ô, ping dư thành năng lượng) kèm báo cáo trinh sát |
-| 23/10 | **Điểm, hệ số nhân, kỷ lục lưu flash**; **nhịp tim** nhanh dần theo mức nguy hiểm ở BATTLE |
-| 23/10 | Rút gọn code: bỏ lệnh debug I2C và phần dò 9 tổ hợp tốc độ/cách đọc (5-way cố định 25 kHz); bỏ cấu hình `ID`, `MOUNT` (cố định #3, chip hướng lên); bỏ lệnh `AIM`, `LOCK`, `POWER`, `HOME` |
-| 23/10 | Rà soát: OLED rút ra được phát hiện, tự hủy không bị treo khi thiếu OLED; không bắn vào bản đồ trống lúc nghỉ giữa đợt; đổi tốc độ I2C nhẹ hơn; vùng tắt ngắt UART khôi phục đúng PRIMASK |
