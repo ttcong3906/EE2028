@@ -3,24 +3,20 @@
  * @brief   EE2028 Assignment 2 (AY26/27 S1) - "The Last of EE2028"
  *          Firmware for an autonomous attacking drone on the B-L4S5I-IOT01A.
  *
- * Full behaviour: docs/SPEC.md (v3.3). One file, two roles (ROLE command,
- * saved in flash, default DRONE):
+ * Full behaviour: docs/SPEC.md (v4). One board, the assignment + 4 Grove
+ * modules: LED matrix (map), OLED (text), buzzer (sound + music), 5-way (control).
  *
- *   DRONE       the assignment + 4 Grove modules (LED matrix, OLED, buzzer, 5-way)
- *     STANDBY   scouting: 6-sensor telemetry (spec), scouting map on the LED
- *               matrix (fly with the 5-way or the controller, find hidden
- *               nests under the fog), human-habitat finder (T + H), OLED pages
- *     BATTLE    LED matrix = spreading infection map (scouted nests are
- *               bigger), aiming, laser charge/auto-fire (spec), weapon power
- *     ATTACKED  "The Last of EE2028" (spec) + Morse SOS, OLED countdown
- *     TERMINATED black box saved to flash, comms cut (spec), MCU Standby
+ *   STANDBY   scouting: 6-sensor telemetry (spec), fly the scout over a fogged
+ *             8x8 area with the 5-way, sonar ping with an echo (single press)
+ *             to find 3 hidden nests, human-habitat finder (T + H)
+ *   BATTLE    shoot zombies on the LED matrix: scouted nests are bigger, aim
+ *             with the 5-way, laser charge/auto-fire (spec), weapon power,
+ *             waves, score with a hit-streak multiplier, heartbeat music that
+ *             speeds up with the danger
+ *   ATTACKED  "The Last of EE2028" (spec) + Morse SOS, OLED countdown
+ *   TERMINATED score + black box saved to flash, comms cut (spec), MCU Standby
  *
- *   CONTROLLER  board 2 as the pilot's handheld controller (no modules),
- *               wired to the drone on UART4: tilt = fly / aim, single = lock
- *               target, double = weapon power / rescue team.
- *
- * Wiring (drone, Grove Base Shield):
- *   D6 buzzer (PB1, TIM3_CH4 PWM)    UART port: controller (PA0 TX, PA1 RX)
+ * Wiring (Grove Base Shield): D6 buzzer (PB1, TIM3_CH4 PWM);
  *   I2C: LED matrix 0x70, OLED 0x3C, 5-way switch 0x03
  *
  * Design rules:
@@ -64,13 +60,12 @@ extern uint8_t SENSOR_IO_Read(uint8_t Addr, uint8_t Reg);
 #define ENABLE_MATRIX           1
 #define ENABLE_BUZZER           1
 #define ENABLE_OLED             1      /* Grove OLED 128x64 (SSD1306/SSD1315) */
-#define ENABLE_LINK             1      /* wired pilot controller on UART4 */
 #define ENABLE_FIVEWAY          1      /* Grove 5-way switch (I2C)          */
 #define ENABLE_FLASH            1      /* black box + config in flash       */
 #define ENABLE_DEV_TOOLS        1      /* I2CSCAN/I2CDUMP/INPUTS: set 0 before submission */
 #define TERMINATE_USE_STANDBY   1      /* 1: MCU Standby mode, 0: sleep loop */
 
-/* --- Defaults (changed at run time with ID / MOUNT / MUTE / ROLE, saved) --- */
+/* --- Defaults (changed at run time with ID / MOUNT / MUTE, saved) --- */
 #define DEFAULT_DRONE_ID        3
 
 /* --- External module quirks (change if the picture looks wrong) --- */
@@ -90,13 +85,6 @@ extern uint8_t SENSOR_IO_Read(uint8_t Addr, uint8_t Reg);
 #define FIVEWAY_IDX_LEFT        2
 #define FIVEWAY_IDX_RIGHT       3
 #define FIVEWAY_IDX_CENTER      4
-
-/* --- Controller tilt mapping (flip if the crosshair moves the wrong way) --- */
-#define CTL_TILT_ON_DEG         20.0f
-#define CTL_TILT_OFF_DEG        12.0f  /* hysteresis */
-#define CTL_INVERT_X            0
-#define CTL_INVERT_Y            0
-#define CTL_SWAP_XY             0
 
 /* --- Timing (ms) --- */
 #define SENSOR_PERIOD_MS        1000U
@@ -126,18 +114,17 @@ extern uint8_t SENSOR_IO_Read(uint8_t Addr, uint8_t Reg);
 #define ICON_MS                 1000U
 #define HOUSE_ICON_MS           2000U
 #define SCOUT_NESTS             3      /* hidden nests per area = wave 1 outbreaks */
+#define SONAR_PINGS             3      /* sonar pings per area                 */
+#define SONAR_RING_MS           90U    /* ring animation: 4 frames             */
+#define SONAR_RAY_MS            700U   /* echo direction ray on the matrix     */
+#define BEAT_SLOW_MS            1200U  /* heartbeat period, empty map          */
+#define BEAT_FAST_MS            350U   /* heartbeat period, map at 75 %        */
 #define BOOT_ID_MS              1000U
 #define BEAM_FRAME_MS           50U
 #define BLAST_FLASH_MS          150U
 #define BOOT_CHECK_MS           2500U  /* OLED system-check page at power-on    */
 #define EVENT_TEXT_MS           2000U  /* OLED event line                      */
 #define OLED_REFRESH_MS         100U
-#define LINK_PERIOD_MS          250U   /* drone -> controller: LINK <mode>     */
-#define LINK_TIMEOUT_MS         3000U  /* no ALIVE for 3 s: controller lost    */
-#define CTL_TILT_POLL_MS        50U
-#define CTL_TILT_REPEAT_MS      150U
-#define CTL_ALIVE_MS            1000U
-#define CTL_LINK_TIMEOUT_MS     2000U
 
 /* --- Physics / thresholds --- */
 #define G_MS2                   9.80665f
@@ -158,7 +145,6 @@ extern uint8_t SENSOR_IO_Read(uint8_t Addr, uint8_t Reg);
  * 2. TYPES AND GLOBAL STATE
  * ==========================================================================*/
 typedef enum { ST_STANDBY = 0, ST_BATTLE, ST_ATTACKED, ST_TERMINATED } sys_state_t;
-enum { ROLE_DRONE = 0, ROLE_CONTROLLER = 1 };
 
 enum { S_T = 0, S_P, S_H, S_A, S_G, S_M, S_COUNT };
 
@@ -186,11 +172,11 @@ typedef struct {
     uint8_t drone_id;       /* 1..9 */
     bool    mount_down;     /* true: Z+ points to the ground (literal spec) */
     bool    muted;
-    uint8_t role;           /* ROLE_DRONE / ROLE_CONTROLLER */
+    uint32_t hiscore;       /* best mission score */
 } drone_cfg_t;
 
 static sys_state_t state = ST_STANDBY;
-static drone_cfg_t cfg = { DEFAULT_DRONE_ID, false, false, ROLE_DRONE };
+static drone_cfg_t cfg = { DEFAULT_DRONE_ID, false, false, 0 };
 static sensors_t   sens;
 static bool        sens_valid = false;
 static uint32_t    boot_tick = 0;
@@ -198,10 +184,11 @@ static uint32_t    boot_tick = 0;
 static uint32_t t_sensor = 0, t_led = 0, t_flip_poll = 0, t_attack_start = 0, t_attack_msg = 0;
 static bool     led_on = false;
 static uint32_t warn_mask = 0;
-static bool     link_up = false;         /* wired pilot controller seen recently */
 
 /* Laser and battle statistics */
 static int      laser_energy = 0;
+static uint32_t score = 0;               /* current mission (scouting + sortie) */
+static int      streak = 0;              /* consecutive hitting shots */
 static uint32_t shots_fired = 0, zombies_down = 0;
 static uint32_t cooldown_until = 0;
 static bool     cooldown_active = false;
@@ -331,87 +318,8 @@ void HAL_UART_TxCpltCallback(UART_HandleTypeDef *huart)
     uart_kick();
 }
 
-/* ============================================================================
- * 3b. WIRED LINK TO THE OTHER BOARD: UART4, PA0 = TX (Arduino D1), PA1 = RX
- *     (Arduino D0), 115200 8N1. Drone: the Grove "UART" port of the shield.
- *     Cross the wires: TX -> RX, RX -> TX, and connect GND.
- * ==========================================================================*/
-UART_HandleTypeDef huart4;
-#define LINK_RX_SIZE 128U
-static uint8_t           link_rx_byte;
-static volatile uint8_t  link_ring[LINK_RX_SIZE];
-static volatile uint16_t link_head = 0, link_tail = 0;
-static char              link_line[32];
-static uint8_t           link_len = 0;
-static bool              link_ready = false;
-
-static void LINK_UART_Init(void)
-{
-#if ENABLE_LINK
-    __HAL_RCC_GPIOA_CLK_ENABLE();
-    __HAL_RCC_UART4_CLK_ENABLE();
-    GPIO_InitTypeDef g = {0};
-    g.Pin       = GPIO_PIN_0 | GPIO_PIN_1;
-    g.Mode      = GPIO_MODE_AF_PP;
-    g.Pull      = GPIO_PULLUP;                      /* idle high when unplugged */
-    g.Speed     = GPIO_SPEED_FREQ_LOW;
-    g.Alternate = GPIO_AF8_UART4;
-    HAL_GPIO_Init(GPIOA, &g);
-
-    huart4.Instance                    = UART4;
-    huart4.Init.BaudRate               = 115200;
-    huart4.Init.WordLength             = UART_WORDLENGTH_8B;
-    huart4.Init.StopBits               = UART_STOPBITS_1;
-    huart4.Init.Parity                 = UART_PARITY_NONE;
-    huart4.Init.Mode                   = UART_MODE_TX_RX;
-    huart4.Init.HwFlowCtl              = UART_HWCONTROL_NONE;
-    huart4.Init.OverSampling           = UART_OVERSAMPLING_16;
-    huart4.Init.OneBitSampling         = UART_ONE_BIT_SAMPLE_DISABLE;
-    huart4.AdvancedInit.AdvFeatureInit = UART_ADVFEATURE_NO_INIT;
-    if (HAL_UART_Init(&huart4) != HAL_OK) return;
-    HAL_NVIC_SetPriority(UART4_IRQn, 7, 0);
-    HAL_NVIC_EnableIRQ(UART4_IRQn);
-    HAL_UART_Receive_IT(&huart4, &link_rx_byte, 1);
-    link_ready = true;
-#endif
-}
-
-/* Short lines only (about 1 ms at 115200), so a blocking send is fine. */
-static void link_send(const char *s)
-{
-    if (link_ready) HAL_UART_Transmit(&huart4, (uint8_t *)s, (uint16_t)strlen(s), 20);
-}
-
-/* Next complete line from the other board, or NULL. */
-static char *link_getline(void)
-{
-    while (link_tail != link_head) {
-        char c = (char)link_ring[link_tail];
-        link_tail = (uint16_t)((link_tail + 1U) % LINK_RX_SIZE);
-        if (c == '\n' || c == '\r') {
-            if (link_len == 0) continue;
-            link_line[link_len] = '\0';
-            link_len = 0;
-            return link_line;
-        }
-        if (link_len < sizeof(link_line) - 1U && c >= 32 && c < 127) link_line[link_len++] = c;
-    }
-    return NULL;
-}
-
-void UART4_IRQHandler(void)
-{
-    HAL_UART_IRQHandler(&huart4);
-}
-
 void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
 {
-    if (huart->Instance == UART4) {
-        uint16_t next = (uint16_t)((link_head + 1U) % LINK_RX_SIZE);
-        if (next != link_tail) { link_ring[link_head] = link_rx_byte; link_head = next; }
-        HAL_UART_Receive_IT(&huart4, &link_rx_byte, 1);
-        return;
-    }
     if (huart->Instance != USART1) return;
     uint16_t next = (uint16_t)((rx_head + 1U) % RX_BUF_SIZE);
     if (next != rx_tail) {
@@ -423,7 +331,6 @@ void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
 
 void HAL_UART_ErrorCallback(UART_HandleTypeDef *huart)
 {
-    if (huart->Instance == UART4) { HAL_UART_Receive_IT(&huart4, &link_rx_byte, 1); return; }
     if (huart->Instance != USART1) return;
     HAL_UART_Receive_IT(&huart1, &rx_byte, 1);   /* HAL aborts RX on overrun */
 }
@@ -492,19 +399,19 @@ static bool flash_write_tail(int k, const void *src, uint32_t len)
 }
 
 /* --- Configuration image (16 bytes) --- */
-#define CFG_MAGIC 0x33474643UL   /* "CFG3" */
+#define CFG_MAGIC 0x34474643UL   /* "CFG4" */
 
 typedef struct {
     uint32_t magic;
-    uint8_t  drone_id, mount_down, muted, role;
+    uint8_t  drone_id, mount_down, muted, rsv8;
     uint32_t sum;
-    uint32_t rsv;
+    uint32_t hiscore;
 } cfg_image_t;
 
 static uint32_t cfg_checksum(const cfg_image_t *c)
 {
     return 0xEE2028u ^ c->magic ^ ((uint32_t)c->drone_id << 1) ^ ((uint32_t)c->mount_down << 9) ^
-           ((uint32_t)c->muted << 17) ^ ((uint32_t)c->role << 25);
+           ((uint32_t)c->muted << 17) ^ (c->hiscore * 2654435761u);
 }
 
 static void cfg_load(void)
@@ -512,11 +419,11 @@ static void cfg_load(void)
 #if ENABLE_FLASH
     const cfg_image_t *f = (const cfg_image_t *)(uintptr_t)flash_tail_addr(FLASH_PAGE_CONFIG);
     if (f->magic == CFG_MAGIC && f->sum == cfg_checksum(f) &&
-        f->drone_id >= 1 && f->drone_id <= 9 && f->role <= ROLE_CONTROLLER) {
+        f->drone_id >= 1 && f->drone_id <= 9) {
         cfg.drone_id   = f->drone_id;
         cfg.mount_down = f->mount_down != 0;
         cfg.muted      = f->muted != 0;
-        cfg.role       = f->role;
+        cfg.hiscore    = f->hiscore;
     }
 #endif
 }
@@ -529,7 +436,7 @@ static bool cfg_save(void)
     c.drone_id = cfg.drone_id;
     c.mount_down = cfg.mount_down;
     c.muted = cfg.muted;
-    c.role = cfg.role;
+    c.hiscore = cfg.hiscore;
     c.sum = cfg_checksum(&c);
     return flash_write_tail(FLASH_PAGE_CONFIG, &c, sizeof(c));
 }
@@ -991,6 +898,12 @@ static const note_t SND_HABITAT[] = { {1319,1319,120,0},{0,0,30,0},{1568,1568,22
 static const note_t SND_REPORT[]  = { {1200,1200,40,0},{0,0,30,0},{1600,1600,40,0} };
 static const note_t SND_VICTORY[] = { {1047,1047,100,0},{1319,1319,100,0},{1568,1568,100,0},{2093,2093,300,0} };
 static const note_t SND_RESCUE[]  = { {1047,1047,150,0},{1319,1319,150,0},{1568,1568,250,0} };
+static const note_t SND_NOPING[]  = { {180,140,300,1} };
+static const note_t SND_BATTLE[]  = { {659,659,110,0},{0,0,20,0},{659,659,110,0},{0,0,20,0},{784,784,110,0},{0,0,20,0},{988,988,260,0} };
+static const note_t SND_HEART[]   = { {90,70,70,0},{0,0,90,0},{80,60,90,0} };   /* lub ... dub */
+static const note_t SND_HISCORE[] = { {1047,1047,90,0},{1319,1319,90,0},{1568,1568,90,0},{2093,2093,150,0},{0,0,40,0},
+                                      {1568,1568,90,0},{2093,2093,350,0} };
+static note_t snd_echo[3];                                 /* ping, gap, echo: built at run time */
 static const note_t SND_GAMEOVER[]= { {1568,1568,300,0},{0,0,50,0},{1319,1319,300,0},{0,0,50,0},
                                       {1047,1047,300,0},{0,0,50,0},{784,784,700,0} };
 #define SND(x) (x), (uint8_t)(sizeof(x) / sizeof((x)[0]))
@@ -1489,6 +1402,8 @@ static uint8_t  scout_nest[8];           /* hidden nests */
 static uint8_t  scout_found[8];          /* nests located */
 static int      scout_x = 3, scout_y = 7, scout_found_n = 0;
 static bool     scout_ready = false;
+static int      pings_left = SONAR_PINGS;
+static char     last_echo[24] = "";
 static bool     scout_changed = true;
 
 static inline bool rbit(const uint8_t r[8], int x, int y) { return (r[y] & (0x80U >> x)) != 0; }
@@ -1619,12 +1534,16 @@ static void scout_scan(bool announce)
             rset(scout_found, x, y);
             scout_found_n++;
             if (announce) {
+                score += 20;
                 uart_printf("[EVT] Scouting: nest found at (%d,%d) (%d/%d)\r\n", x, y, scout_found_n, SCOUT_NESTS);
                 char t[24];
                 snprintf(t, sizeof(t), "NEST FOUND %d/%d", scout_found_n, SCOUT_NESTS);
                 event_text(t, 2);
                 if (scout_found_n == SCOUT_NESTS) {
-                    uart_printf("[EVT] Scouting complete: all %d nests located\r\n", SCOUT_NESTS);
+                    uint32_t bonus = 30U + 20U * (uint32_t)pings_left;
+                    score += bonus;
+                    uart_printf("[EVT] Scouting complete: all %d nests located, +%lu bonus (%d pings left). Score %lu\r\n",
+                                SCOUT_NESTS, (unsigned long)bonus, pings_left, (unsigned long)score);
                     bz_fx(SND(SND_VICTORY));
                 } else {
                     bz_fx(SND(SND_ALARM));
@@ -1646,6 +1565,9 @@ static void scout_new(void)
         if (!rbit(scout_nest, x, y)) { rset(scout_nest, x, y); placed++; }
     }
     scout_x = 3; scout_y = 7; scout_found_n = 0;
+    pings_left = SONAR_PINGS;
+    last_echo[0] = '\0';
+    score = 0; streak = 0;                            /* a new area is a new mission */
     scout_ready = true;
     scout_scan(false);
 }
@@ -1662,6 +1584,63 @@ static void scout_move(int dx, int dy)
     if (!inside(nx, ny) || (nx == scout_x && ny == scout_y)) return;
     scout_x = nx; scout_y = ny;
     scout_scan(true);
+}
+
+/* --- Sonar (single press in STANDBY): a ring goes out, the echo of the
+ *     nearest unfound nest comes back sooner and higher the closer it is.
+ *     Nothing is revealed: the pilot has to fly there. --- */
+static uint32_t sonar_t0 = 0, sonar_echo_ms = 0;
+static bool     sonar_anim = false;
+static int      echo_d = 0, echo_ux = 0, echo_uy = 0;   /* distance + unit step of the ray */
+
+static const char *dir8(int dx, int dy)          /* N = towards row 0 */
+{
+    static const char *n[8] = { "E", "NE", "N", "NW", "W", "SW", "S", "SE" };
+    float a = atan2f((float)-dy, (float)dx) * 57.29578f;
+    if (a < 0) a += 360.0f;
+    return n[((int)(a + 22.5f) / 45) % 8];
+}
+
+static void sonar_ping(void)
+{
+    if (state != ST_STANDBY || !scout_ready) return;
+    if (pings_left <= 0) {
+        uart_write("[EVT] Sonar: no pings left in this area\r\n");
+        event_text("NO PINGS LEFT", 1);
+        bz_fx(SND(SND_NOPING));
+        return;
+    }
+    pings_left--;
+    int best = 99, bx = 0, by = 0;
+    for (int y = 0; y < 8; y++) for (int x = 0; x < 8; x++) {
+        if (!rbit(scout_nest, x, y) || rbit(scout_found, x, y)) continue;
+        int dx = x - scout_x, dy = y - scout_y;
+        int d = abs(dx) > abs(dy) ? abs(dx) : abs(dy);
+        if (d < best) { best = d; bx = dx; by = dy; }
+    }
+    sonar_t0 = HAL_GetTick();
+    sonar_anim = true;
+    snd_echo[0] = (note_t){ 2400, 2200, 60, 0 };              /* ping */
+    if (best == 99) {                                         /* every nest already found */
+        echo_d = 0;
+        sonar_echo_ms = 0;
+        snprintf(last_echo, sizeof(last_echo), "NO ECHO");
+        uart_printf("[EVT] Sonar ping %d/%d: no echo, all nests located\r\n", SONAR_PINGS - pings_left, SONAR_PINGS);
+        bz_fx(snd_echo, 1);
+    } else {
+        echo_d = best;
+        echo_ux = bx > 0 ? 1 : (bx < 0 ? -1 : 0);
+        echo_uy = by > 0 ? 1 : (by < 0 ? -1 : 0);
+        sonar_echo_ms = 150U + 100U * (uint32_t)best;
+        uint16_t f = (uint16_t)(2600 - 250 * best);
+        snd_echo[1] = (note_t){ 0, 0, (uint16_t)(sonar_echo_ms - 60U), 0 };
+        snd_echo[2] = (note_t){ f, f, 90, 0 };                /* the echo */
+        snprintf(last_echo, sizeof(last_echo), "ECHO: %d CELL%s %s", best, best > 1 ? "S" : "", dir8(bx, by));
+        uart_printf("[EVT] Sonar ping %d/%d: echo from %d cell%s %s\r\n", SONAR_PINGS - pings_left, SONAR_PINGS,
+                    best, best > 1 ? "s" : "", dir8(bx, by));
+        bz_fx(snd_echo, 3);
+    }
+    event_text(last_echo, 2);
 }
 
 /* ============================================================================
@@ -1745,7 +1724,7 @@ static void hud_boot_check(void)
     oled_linef(1, "SENSORS      %s", sensors_ok ? "OK" : "FAIL");
     oled_linef(2, "LED MATRIX   %s", mx_ok ? "OK" : "NOT FOUND");
     oled_linef(3, "5-WAY        %s", fiveway_addr ? "OK" : "NOT FOUND");
-    oled_linef(4, "CONTROLLER   %s", link_up ? "LINKED" : "WAITING");
+    oled_linef(4, "BEST SCORE   %lu", (unsigned long)cfg.hiscore);
     oled_linef(5, "BLACK BOX    %s", bb_flash_valid ? "FOUND" : "EMPTY");
     oled_line(6, "");
     oled_linef(7, "DRONE #%d  STARTING", cfg.drone_id);
@@ -1775,21 +1754,21 @@ static void hud_standby(void)
         else oled_line(7, "STATUS: ALL NORMAL");
     } else if (oled_page == 1) {                             /* scouting */
         oled_linef(1, "NESTS FOUND   %d/%d%s", scout_found_n, SCOUT_NESTS, scout_found_n >= SCOUT_NESTS ? " ALL" : "");
-        oled_linef(2, "AREA SCANNED %2d/64", scout_scanned());
-        oled_linef(3, "SCOUT AT (%d,%d)", scout_x, scout_y);
-        oled_linef(4, "ALT %+6.1f m", altitude_m());
+        oled_linef(2, "PINGS LEFT    %d/%d", pings_left, SONAR_PINGS);
+        oled_linef(3, "SCANNED %2d/64 (%d,%d)", scout_scanned(), scout_x, scout_y);
+        oled_line(4, last_echo[0] ? last_echo : "ECHO: -");
         oled_line(5, habitat_found ? "HABITAT: FOUND" : "HABITAT: SEARCHING");
         oled_line(6, "");
         oled_line(7, event_active() ? ev_text : "5WAY FLY  MID PAGE");
     } else if (oled_page == 2) {                             /* mission */
         uint32_t sec = (HAL_GetTick() - boot_tick) / 1000U;
-        oled_linef(1, "FLIGHT %02lu:%02lu", (unsigned long)(sec / 60U), (unsigned long)(sec % 60U));
-        oled_linef(2, "ZOMBIES DOWN %lu", (unsigned long)zombies_down);
-        oled_linef(3, "SHOTS FIRED  %lu", (unsigned long)shots_fired);
-        oled_linef(4, "HABITATS     %lux", (unsigned long)habitat_count);
-        oled_linef(5, "CONTROLLER %s", link_up ? "LINKED" : "NONE");
-        oled_line(6, "");
-        oled_line(7, "1x REPORT 2x BATTLE");
+        oled_linef(1, "SCORE        %lu", (unsigned long)score);
+        oled_linef(2, "BEST         %lu", (unsigned long)cfg.hiscore);
+        oled_linef(3, "FLIGHT       %02lu:%02lu", (unsigned long)(sec / 60U), (unsigned long)(sec % 60U));
+        oled_linef(4, "ZOMBIES DOWN %lu", (unsigned long)zombies_down);
+        oled_linef(5, "SHOTS FIRED  %lu", (unsigned long)shots_fired);
+        oled_linef(6, "HABITATS     %lux", (unsigned long)habitat_count);
+        oled_line(7, event_active() ? ev_text : "1x PING 2x BATTLE");
     } else {                                                 /* black box */
         const bb_image_t *img = bb_shown();
         oled_line(1, bb_flash_valid ? "BLACK BOX: LOST DRONE" : (img->count ? "BLACK BOX: LAST RUN" : "BLACK BOX: EMPTY"));
@@ -1829,10 +1808,11 @@ static void hud_battle(void)
         oled_linef(3, "ENERGY %2d/10 P%d %s", laser_energy, p, weapon_sel ? power_name(p) : "RULE");
     }
     oled_linef(4, "AIM (%d,%d)   %s", aim_x, aim_y, cell(aim_x, aim_y) ? "TARGET!" : "");
-    oled_linef(5, "DOWN %-4lu SHOTS %lu", (unsigned long)zombies_down, (unsigned long)shots_fired);
+    int mult = streak + 1 > 4 ? 4 : streak + 1;
+    oled_linef(5, "SCORE %-6lu NEXT x%d", (unsigned long)score, mult);
     if (event_active())              oled_line(6, ev_text);
     else if (n >= MAP_OVERRUN_CELLS) oled_line(6, "AREA OVERRUN!");
-    else                             oled_line(6, link_up ? "PILOT LINKED" : "");
+    else                             oled_line(6, "");
     oled_line(7, "1x CHARGE 2x STANDBY");
 }
 
@@ -1908,6 +1888,21 @@ static void matrix_render(void)
         for (int r = 0; r < 8; r++)
             rows[r] = nest_on ? (uint8_t)(scout_fog[r] | scout_found[r]) : (uint8_t)(scout_fog[r] & ~scout_found[r]);
         if (drone_on) rset(rows, scout_x, scout_y); else rclr(rows, scout_x, scout_y);
+        if (sonar_anim) {
+            uint32_t t = now - sonar_t0;
+            if (t < 4U * SONAR_RING_MS) {                     /* expanding ring, radius 1..4 */
+                int r = 1 + (int)(t / SONAR_RING_MS);
+                for (int y = scout_y - r; y <= scout_y + r; y++) for (int x = scout_x - r; x <= scout_x + r; x++)
+                    if (inside(x, y) && (abs(x - scout_x) == r || abs(y - scout_y) == r)) rset(rows, x, y);
+            }
+            if (echo_d && t >= sonar_echo_ms && t < sonar_echo_ms + SONAR_RAY_MS) {   /* echo: ray towards the nest */
+                for (int k = 1; k <= echo_d; k++) {
+                    int x = scout_x + echo_ux * k, y = scout_y + echo_uy * k;
+                    if (inside(x, y)) rset(rows, x, y);
+                }
+            }
+            if (t >= 4U * SONAR_RING_MS && t >= sonar_echo_ms + SONAR_RAY_MS) sonar_anim = false;
+        }
         mx_show(rows);
         return;
     }
@@ -1957,16 +1952,31 @@ static void send_stat(void)
                 weapon_sel ? "SELECT" : "RULE", p,
                 (unsigned long)shots_fired, (unsigned long)zombies_down,
                 altitude_m(), scout_scanned(), scout_found_n, SCOUT_NESTS);
-    uart_printf("[STAT] CONTROLLER: %s, HABITAT: %s, MUTE: %s, MOUNT: %s, OLED: %s, LED MATRIX: %s, 5-WAY: %s\r\n",
-                link_up ? "LINKED" : "none", habitat_found ? "FOUND" : "SEARCHING",
+    uart_printf("[STAT] SCORE: %lu, BEST: %lu, HABITAT: %s, MUTE: %s, MOUNT: %s, OLED: %s, LED MATRIX: %s, 5-WAY: %s\r\n",
+                (unsigned long)score, (unsigned long)cfg.hiscore, habitat_found ? "FOUND" : "SEARCHING",
                 cfg.muted ? "ON" : "OFF", cfg.mount_down ? "Z+ down" : "chip-up",
                 oled_ok ? "OK" : "missing",
                 mx_ok ? "OK" : "missing", fiveway_addr ? "OK" : "missing");
 }
 
+static void laser_try_fire(void);
+
+/* --- Mission score: settled when the sortie ends (back to STANDBY or self-destruct) --- */
+static void score_finalize(bool play)
+{
+    uart_printf("[EVT] Mission score: %lu (best %lu)\r\n", (unsigned long)score, (unsigned long)cfg.hiscore);
+    if (score <= cfg.hiscore) return;
+    uart_printf("[EVT] NEW HIGH SCORE: %lu (was %lu)\r\n", (unsigned long)score, (unsigned long)cfg.hiscore);
+    cfg.hiscore = score;
+    cfg_save();
+    event_text("NEW HIGH SCORE!", EV_EFFECT);
+    if (play) bz_fx(SND(SND_HISCORE));
+}
+
 static void enter_standby(void)
 {
-    if (state == ST_BATTLE) {
+    bool from_battle = (state == ST_BATTLE);
+    if (from_battle) {
         bb_log(BB_STANDBY, 0, 0, 0, 0);
         bb.end_reason = BB_END_RETURNED;
         bb.flight_s = (uint16_t)((HAL_GetTick() - bb_t0) / 1000U);
@@ -1976,7 +1986,8 @@ static void enter_standby(void)
     led_set(true);
     warn_mask = 0;
     map_live = false;                 /* map is wiped when leaving BATTLE */
-    scout_new();                      /* a new area to scout */
+    if (from_battle) score_finalize(true);
+    scout_new();                      /* a new area to scout, score back to 0 */
     oled_page = 0;
     bb_view = 0;
     cooldown_active = false;
@@ -1992,9 +2003,18 @@ static void enter_battle(bool from_rescue)
         flip_armed = true;
         aim_manual = false;
         weapon_sel = false;                             /* every sortie starts in RULE mode */
-        bz_fx(SND(SND_MODE));
+        streak = 0;
+        bz_fx(SND(SND_BATTLE));
         bb_clear();                                     /* new sortie, new black box */
         if (bb_flash_valid) { flash_erase_tail(FLASH_PAGE_BLACKBOX); bb_flash_valid = false; }
+        if (pings_left > 0) {                           /* unused sonar pings -> laser energy */
+            int before = laser_energy;
+            laser_energy += pings_left;
+            if (laser_energy > LASER_MAX) laser_energy = LASER_MAX;
+            uart_printf("[EVT] Unused sonar pings: +%d/10 laser energy (%d/10 -> %d/10)\r\n",
+                        pings_left, before, laser_energy);
+            pings_left = 0;
+        }
         bb_log(BB_SORTIE, laser_energy, weapon_power(), 0, 0);
         map_new();
     }
@@ -2005,6 +2025,7 @@ static void enter_battle(bool from_rescue)
     t_spread = HAL_GetTick();
     if (!wave_active) wave_pause_t = HAL_GetTick();
     send_stat();
+    if (!from_rescue) laser_try_fire();                 /* bonus energy may already be enough */
 }
 
 static void enter_attacked(float az)
@@ -2036,6 +2057,7 @@ static void rescue(void)
 static void terminate(void)
 {
     bb_log(BB_DESTRUCT, 0, 0, 0, 0);
+    score_finalize(false);
     bb.end_reason = BB_END_TIMEOUT;
     bb.flight_s = (uint16_t)((HAL_GetTick() - bb_t0) / 1000U);
     state = ST_TERMINATED;
@@ -2053,12 +2075,7 @@ static void terminate(void)
     while (!elapsed(t0, 2500U)) bz_update();        /* let the last message and tune finish */
     uart_flush(500);
 
-    /* Cut all communication (spec): the controller hears it first, then UART4 and USART1 go */
-    link_send("LINK TERMINATED\n");
-    link_ready = false;
-    HAL_UART_AbortReceive(&huart4);
-    HAL_UART_DeInit(&huart4);
-    HAL_NVIC_DisableIRQ(UART4_IRQn);
+    /* Cut all communication (spec) */
     uart_enabled = false;
     HAL_UART_AbortReceive(&huart1);
     HAL_UART_DeInit(&huart1);
@@ -2106,13 +2123,18 @@ static void laser_fire(void)
     else             bz_fx(SND(SND_BOOM));
 
     if (cleared) {
-        uart_printf("[EVT] LASER FIRED (%d/10, %s) at (%d,%d): %d cell%s cleared. Energy %d/10 -> %d/10. Zombies down: %lu\r\n",
-                    p, power_name(p), aim_x, aim_y, cleared, cleared > 1 ? "s" : "", before, laser_energy,
-                    (unsigned long)zombies_down);
-        char t[24];
-        snprintf(t, sizeof(t), "HIT! %d CELL%s CLEARED", cleared, cleared > 1 ? "S" : "");
+        int mult = streak + 1 > 4 ? 4 : streak + 1;     /* hit streak: x1, x2, x3, x4 */
+        uint32_t pts = 10U * (uint32_t)cleared * (uint32_t)mult;
+        score += pts;
+        streak++;
+        uart_printf("[EVT] LASER FIRED (%d/10, %s) at (%d,%d): %d cell%s cleared, +%lu points (x%d). Energy %d/10 -> %d/10. Zombies down: %lu\r\n",
+                    p, power_name(p), aim_x, aim_y, cleared, cleared > 1 ? "s" : "", (unsigned long)pts, mult,
+                    before, laser_energy, (unsigned long)zombies_down);
+        char t[40];
+        snprintf(t, sizeof(t), "HIT! %d +%lu x%d", cleared, (unsigned long)pts, mult);
         event_text(t, EV_EFFECT);
     } else {
+        streak = 0;
         uart_printf("[EVT] LASER FIRED (%d/10, %s) at (%d,%d): missed, no zombies there. Energy %d/10 -> %d/10\r\n",
                     p, power_name(p), aim_x, aim_y, before, laser_energy);
         event_text("MISSED!", EV_EFFECT);
@@ -2202,19 +2224,17 @@ static void scout_report(void)
 {
     uint32_t s = (HAL_GetTick() - boot_tick) / 1000U;
     uart_printf("[REPORT] Drone #%d: flight %02lu:%02lu, alt %+.1f m, area scanned %d/64, nests found %d/%d, "
-                "habitat found %lux, zombies down %lu, shots %lu\r\n",
+                "pings left %d/%d, score %lu, habitat found %lux, zombies down %lu, shots %lu\r\n",
                 cfg.drone_id, (unsigned long)(s / 60U), (unsigned long)(s % 60U), altitude_m(),
-                scout_scanned(), scout_found_n, SCOUT_NESTS, (unsigned long)habitat_count,
-                (unsigned long)zombies_down, (unsigned long)shots_fired);
-    bz_fx(SND(SND_REPORT));
-    event_text("REPORT SENT", EV_NORMAL);
+                scout_scanned(), scout_found_n, SCOUT_NESTS, pings_left, SONAR_PINGS, (unsigned long)score,
+                (unsigned long)habitat_count, (unsigned long)zombies_down, (unsigned long)shots_fired);
 }
 
 /* --- Actions shared by the push button and UART commands --- */
 static void action_single(void)
 {
     switch (state) {
-    case ST_STANDBY: scout_report(); break;
+    case ST_STANDBY: sonar_ping(); scout_report(); break;
     case ST_BATTLE:  laser_charge(); break;
     default: break;                         /* ignored while attacked (spec) */
     }
@@ -2349,12 +2369,25 @@ static void standby_tick(void)
     }
 }
 
+/* Heartbeat: faster as the map fills up (1200 ms empty -> 350 ms at 75 %). */
+static uint32_t t_beat = 0;
+static uint32_t beat_period(void)
+{
+    int n = map_count();
+    if (n > MAP_OVERRUN_CELLS) n = MAP_OVERRUN_CELLS;
+    return BEAT_SLOW_MS - (BEAT_SLOW_MS - BEAT_FAST_MS) * (uint32_t)n / MAP_OVERRUN_CELLS;
+}
+
 static void battle_tick(void)
 {
     if (elapsed(t_led, LED_BATTLE_TOGGLE_MS)) {
         t_led += LED_BATTLE_TOGGLE_MS;
         if (elapsed(t_led, LED_BATTLE_TOGGLE_MS)) t_led = HAL_GetTick();
         led_set(!led_on);
+    }
+    if (map_live && wave_active && !bz_playing(NULL) && elapsed(t_beat, beat_period())) {
+        t_beat = HAL_GetTick();
+        bz_play(SND(SND_HEART), false);                  /* only when the buzzer is free */
     }
 
     /* Waves: cleared map -> AREA CLEARED, short pause, next (bigger, faster) wave */
@@ -2363,7 +2396,9 @@ static void battle_tick(void)
         wave_pause_t = HAL_GetTick();
         bb.waves++;
         bb_log(BB_WAVE_CLEAR, wave_no, bb.cells, 0, 0);
-        uart_printf("[EVT] Wave %d cleared! AREA CLEARED (%u cells cleared this sortie)\r\n", wave_no, bb.cells);
+        score += 50U * (uint32_t)wave_no;
+        uart_printf("[EVT] Wave %d cleared! AREA CLEARED (%u cells cleared this sortie), +%d bonus. Score %lu\r\n",
+                    wave_no, bb.cells, 50 * wave_no, (unsigned long)score);
         event_text("AREA CLEARED!", EV_EFFECT);
         bz_fx(SND(SND_VICTORY));
     } else if (map_live && !wave_active && elapsed(wave_pause_t, WAVE_PAUSE_MS)) {
@@ -2429,152 +2464,6 @@ static void attacked_tick(void)
     }
 }
 
-/* --- Drone side of the wired link: controller lines -> the same actions as
- *     the 5-way / UART commands; LINK <mode> back for the controller's LED. --- */
-static uint32_t t_link_tx = 0, t_link_rx = 0;
-
-static void link_on_line(const char *l)
-{
-    int dx, dy;
-    t_link_rx = HAL_GetTick();
-    if (!link_up) {
-        link_up = true;
-        uart_write("[EVT] Pilot controller connected\r\n");
-        event_text("PILOT LINKED", EV_NORMAL);
-    }
-    if (sscanf(l, "TILT %d %d", &dx, &dy) == 2) {
-        dx = dx > 0 ? 1 : (dx < 0 ? -1 : 0);
-        dy = dy > 0 ? 1 : (dy < 0 ? -1 : 0);
-        if (state == ST_STANDBY) scout_move(dx, dy);
-        else if (state == ST_BATTLE) { aim_manual = true; aim_move(dx, dy); }
-    } else if (!strcmp(l, "BTN SINGLE")) {
-        if (state == ST_BATTLE) { aim_manual = true; target_lock(); }
-    } else if (!strcmp(l, "BTN DOUBLE")) {
-        if (state == ST_BATTLE) weapon_next();
-        else if (state == ST_ATTACKED) {
-            uart_write("[EVT] Lab rescue team dispatched by the pilot\r\n");
-            rescue();
-        }
-    }
-}
-
-static void link_tick(void)
-{
-#if ENABLE_LINK
-    const char *l;
-    while ((l = link_getline()) != NULL) link_on_line(l);
-    if (link_up && elapsed(t_link_rx, LINK_TIMEOUT_MS)) {
-        link_up = false;
-        uart_write("[EVT] Pilot controller lost\r\n");
-        event_text("PILOT LOST", EV_NORMAL);
-    }
-    if (elapsed(t_link_tx, LINK_PERIOD_MS)) {
-        t_link_tx = HAL_GetTick();
-        char b[24];
-        snprintf(b, sizeof(b), "LINK %s\n", mode_name(state));
-        link_send(b);
-    }
-#endif
-}
-
-/* ============================================================================
- * 15. PILOT CONTROLLER (ROLE CONTROLLER): board 2, no external modules.
- *     Wired to the drone on UART4; its own USART1 (USB) is only for HELP,
- *     STATUS, ROLE and for watching what it sends.
- * ==========================================================================*/
-static void ctl_emit(const char *msg, bool echo)
-{
-    char b[32];
-    snprintf(b, sizeof(b), "%s\n", msg);
-    link_send(b);
-    if (echo) uart_printf("[CTL] %s\r\n", msg);
-}
-static int      ctl_tx = 0, ctl_ty = 0;          /* current tilt direction */
-static uint32_t t_ctl_tilt = 0, t_ctl_rep = 0, t_ctl_alive = 0, t_ctl_link = 0;
-static uint8_t  ctl_link = 0xFF;                 /* drone mode from LINK, 0xFF = none */
-static float    ctl_ang_x = 0.0f, ctl_ang_y = 0.0f;
-
-static int tilt_axis(float ang, int cur)
-{
-    if (cur > 0 && ang > CTL_TILT_OFF_DEG) return 1;
-    if (cur < 0 && ang < -CTL_TILT_OFF_DEG) return -1;
-    if (ang > CTL_TILT_ON_DEG) return 1;
-    if (ang < -CTL_TILT_ON_DEG) return -1;
-    return 0;
-}
-
-static void ctl_tilt_tick(void)
-{
-    if (!elapsed(t_ctl_tilt, CTL_TILT_POLL_MS)) return;
-    t_ctl_tilt = HAL_GetTick();
-    int16_t r[3] = {0};
-    BSP_ACCELERO_AccGetXYZ(r);
-    float ax = (float)r[0], ay = (float)r[1], az = (float)r[2];
-    /* Right edge down -> ax < 0 -> aim right. Top edge down -> ay < 0 -> aim up (far). */
-    float ang_x = atan2f(0.0f - ax, sqrtf(ay * ay + az * az)) * 57.29578f;   /* 0 - x: no "-0" */
-    float ang_y = atan2f( ay, sqrtf(ax * ax + az * az)) * 57.29578f;
-#if CTL_SWAP_XY
-    { float t = ang_x; ang_x = ang_y; ang_y = t; }
-#endif
-#if CTL_INVERT_X
-    ang_x = -ang_x;
-#endif
-#if CTL_INVERT_Y
-    ang_y = -ang_y;
-#endif
-    ctl_ang_x = ang_x; ctl_ang_y = ang_y;
-    int tx = tilt_axis(ang_x, ctl_tx), ty = tilt_axis(ang_y, ctl_ty);
-    bool fresh = (tx != ctl_tx || ty != ctl_ty);
-    ctl_tx = tx; ctl_ty = ty;
-    if (tx == 0 && ty == 0) return;
-    if (fresh || elapsed(t_ctl_rep, CTL_TILT_REPEAT_MS)) {
-        t_ctl_rep = HAL_GetTick();
-        char m[16];
-        snprintf(m, sizeof(m), "TILT %d %d", tx, ty);
-        ctl_emit(m, true);
-    }
-}
-
-static void ctl_led_tick(void)
-{
-    bool linked = ctl_link != 0xFF && !elapsed(t_ctl_link, CTL_LINK_TIMEOUT_MS);
-    if (!linked)                         { if (led_on) led_set(false); return; }
-    if (ctl_link == ST_STANDBY)          { if (!led_on) led_set(true); return; }
-    if (ctl_link == ST_TERMINATED)       { if (led_on) led_set(false); return; }
-    uint32_t half = (ctl_link == ST_ATTACKED) ? LED_ATTACK_TOGGLE_MS : LED_BATTLE_TOGGLE_MS;
-    if (elapsed(t_led, half)) { t_led = HAL_GetTick(); led_set(!led_on); }
-}
-
-static void ctl_cmd(const char *verb, const char *arg1)
-{
-    if (!strcmp(verb, "LINK")) {
-        uint8_t m = 0xFF;
-        if (arg1) for (uint8_t s = ST_STANDBY; s <= ST_TERMINATED; s++) if (!strcmp(arg1, mode_name((sys_state_t)s))) m = s;
-        if (m != 0xFF) { ctl_link = m; t_ctl_link = HAL_GetTick(); }
-        return;                                       /* silent: sent 4x per second */
-    }
-    if (!strcmp(verb, "HELP")) {
-        uart_write("[CMD] Controller: tilt = aim, 1x = lock target, 2x = weapon power / rescue team\r\n"
-                   "[CMD]   STATUS | ROLE DRONE   (wire: UART4 PA0/PA1 = D1/D0 to the drone's Grove UART port)\r\n");
-        return;
-    }
-    if (!strcmp(verb, "STATUS")) {
-        uart_printf("[STAT] CONTROLLER: tilt x %.0f deg, y %.0f deg, link %s\r\n", ctl_ang_x, ctl_ang_y,
-                    (ctl_link != 0xFF && !elapsed(t_ctl_link, CTL_LINK_TIMEOUT_MS)) ? mode_name((sys_state_t)ctl_link) : "NONE");
-        return;
-    }
-    if (!strcmp(verb, "ROLE")) {
-        if (!arg1 || strcmp(arg1, "DRONE")) { uart_write("[CMD] ERR usage: ROLE DRONE\r\n"); return; }
-        cfg.role = ROLE_DRONE;
-        bool ok = cfg_save();
-        uart_printf("[CMD] OK ROLE DRONE (%s). Restarting\r\n", ok ? "saved" : "NOT saved");
-        uart_flush(300);
-        NVIC_SystemReset();
-        return;
-    }
-    uart_printf("[CMD] ERR unknown command '%s' (type HELP)\r\n", verb);
-}
-
 /* ============================================================================
  * 16. UART COMMAND INTERFACE
  * ==========================================================================*/
@@ -2582,9 +2471,9 @@ static void cmd_help(void)
 {
     uart_write("[CMD] Commands:\r\n"
                "[CMD]   HELP | STATUS | THRESH | SET <T|P|H|A|G|M>_<LOW|HIGH> <v>\r\n"
-               "[CMD]   MODE STANDBY|BATTLE | CHARGE | RESCUE\r\n"
+               "[CMD]   MODE STANDBY|BATTLE | CHARGE | RESCUE | PING\r\n"
                "[CMD]   battle:  AIM <dx> <dy> (crosshair) | LOCK | POWER RULE|1..5|NEXT\r\n"
-               "[CMD]   standby: AIM <dx> <dy> (fly the scout) | HOME | BLACKBOX | ID <1..9> | MOUNT CHIPUP|ZDOWN | MUTE ON|OFF | ROLE DRONE|CONTROLLER\r\n"
+               "[CMD]   standby: AIM <dx> <dy> (fly the scout) | HOME | BLACKBOX | ID <1..9> | MOUNT CHIPUP|ZDOWN | MUTE ON|OFF | HISCORE RESET\r\n"
 #if ENABLE_DEV_TOOLS
                "[CMD]   dev: I2CSCAN | I2CDUMP <addr> <cmd> <n> | I2CSPEED 100|50|25 | FIVEWAY | INPUTS | MAG\r\n"
 #endif
@@ -2724,12 +2613,10 @@ static void cmd_exec(char *line)
     char *arg2 = strtok(NULL, " \t");
     if (!verb) return;
 
-    if (cfg.role == ROLE_CONTROLLER) { ctl_cmd(verb, arg1); return; }
 
     if (!strcmp(verb, "HELP"))   { cmd_help();   return; }
     if (!strcmp(verb, "STATUS")) { send_stat();  return; }
     if (!strcmp(verb, "THRESH")) { cmd_thresh(); return; }
-    if (!strcmp(verb, "LINK"))   { return; }             /* meant for the controller */
 
     if (!strcmp(verb, "SET")) {
         if (!arg1 || !arg2) { uart_write("[CMD] ERR usage: SET T_HIGH 30\r\n"); return; }
@@ -2759,6 +2646,7 @@ static void cmd_exec(char *line)
         return;
     }
     if (!strcmp(verb, "CHARGE")) { if (state == ST_BATTLE)   laser_charge(); else cmd_not_allowed(); return; }
+    if (!strcmp(verb, "PING"))   { if (state == ST_STANDBY)  action_single(); else cmd_not_allowed(); return; }
     if (!strcmp(verb, "RESCUE")) { if (state == ST_ATTACKED) rescue();       else cmd_not_allowed(); return; }
 
     /* --- Battle: aiming and weapon (5-way or pilot controller) --- */
@@ -2789,7 +2677,7 @@ static void cmd_exec(char *line)
     }
 
     /* --- Standby only: configuration (saved to flash) and tools --- */
-    bool is_cfg = !strcmp(verb, "MUTE") || !strcmp(verb, "ID") || !strcmp(verb, "MOUNT") || !strcmp(verb, "ROLE");
+    bool is_cfg = !strcmp(verb, "MUTE") || !strcmp(verb, "ID") || !strcmp(verb, "MOUNT") || !strcmp(verb, "HISCORE");
     bool is_sb  = is_cfg || !strcmp(verb, "HOME") || !strcmp(verb, "BLACKBOX");
     if (is_sb && state != ST_STANDBY) { cmd_not_allowed(); return; }
 
@@ -2817,14 +2705,10 @@ static void cmd_exec(char *line)
         cmd_cfg_saved(cfg.mount_down ? "MOUNT Z+ down" : "MOUNT chip-up");
         return;
     }
-    if (!strcmp(verb, "ROLE")) {
-        if (arg1 && !strcmp(arg1, "DRONE")) { uart_write("[CMD] OK already DRONE\r\n"); return; }
-        if (!arg1 || strcmp(arg1, "CONTROLLER")) { uart_write("[CMD] ERR usage: ROLE DRONE | ROLE CONTROLLER\r\n"); return; }
-        cfg.role = ROLE_CONTROLLER;
-        cmd_cfg_saved("ROLE CONTROLLER");
-        uart_write("[CMD] Restarting as pilot controller\r\n");
-        uart_flush(300);
-        NVIC_SystemReset();
+    if (!strcmp(verb, "HISCORE")) {
+        if (!arg1 || strcmp(arg1, "RESET")) { uart_write("[CMD] ERR usage: HISCORE RESET\r\n"); return; }
+        cfg.hiscore = 0;
+        cmd_cfg_saved("HISCORE 0");
         return;
     }
     if (!strcmp(verb, "HOME")) { altitude_rezero(true); return; }
@@ -2974,7 +2858,6 @@ static void app_init(void)
     boot_tick = HAL_GetTick();
     BSP_LED_Init(LED2);
     UART1_Init();
-    LINK_UART_Init();
     sensors_init();
     uint32_t up = HAL_GetTick();                      /* Grove modules' own MCUs need to boot */
     if (up < MODULE_BOOT_MS) HAL_Delay(MODULE_BOOT_MS - up);
@@ -3069,48 +2952,16 @@ static void app_loop(void)
         default: break;
     }
 
-    if (state != ST_TERMINATED) link_tick();
     bz_update();
     matrix_render();
     hud_tick();
     oled_flush_step();
 }
 
-static void ctl_init(void)
-{
-    boot_tick = HAL_GetTick();
-    BSP_LED_Init(LED2);
-    UART1_Init();
-    BSP_ACCELERO_Init();
-    GPIO_IT_Init();
-    LINK_UART_Init();
-    led_set(false);
-    uart_write("\r\n=== Pilot controller online === tilt = fly / aim, 1x = lock, 2x = power / rescue. Type HELP\r\n");
-}
-
-static void ctl_loop(void)
-{
-    uint8_t singles, doubles;
-    uart_poll_commands();
-    button_collect(&singles, &doubles);
-    while (singles--) ctl_emit("BTN SINGLE", true);
-    while (doubles--) ctl_emit("BTN DOUBLE", true);
-    const char *l;
-    while ((l = link_getline()) != NULL)                     /* "LINK <mode>" from the drone */
-        if (!strncmp(l, "LINK ", 5)) ctl_cmd("LINK", l + 5);
-    ctl_tilt_tick();
-    ctl_led_tick();
-    if (elapsed(t_ctl_alive, CTL_ALIVE_MS)) { t_ctl_alive = HAL_GetTick(); ctl_emit("ALIVE", false); }
-}
-
 int main(void)
 {
     HAL_Init();
     cfg_load();
-    if (cfg.role == ROLE_CONTROLLER) {
-        ctl_init();
-        while (1) ctl_loop();
-    }
     app_init();
     while (1) {
         app_loop();

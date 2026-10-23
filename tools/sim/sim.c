@@ -1,5 +1,5 @@
-/* Host simulation of samplecode.c (spec v3.3): fake clock, sensors, button,
- * USART1 + UART4 (controller link), Grove 5-way / LED matrix / OLED on I2C,
+/* Host simulation of samplecode.c (spec v4): fake clock, sensors, button,
+ * USART1, Grove 5-way / LED matrix / OLED on I2C, buzzer sequencer,
  * two flash pages. Logic tests only. */
 #include <stdio.h>
 #include <string.h>
@@ -35,8 +35,6 @@ static int erase_count[2];          /* [0] page 254, [1] page 255 */
 
 static int sim_oled_present = 1;
 static int max_khz_fw = 0, max_khz_disp = 0;      /* fastest speed seen per device */
-static char link_out[100000]; static size_t link_outn = 0;
-static uint8_t *link_rx_ptr = NULL;
 static void note_speed(uint16_t a) { if (a == 0x03 && i2c_khz > max_khz_fw) max_khz_fw = i2c_khz; if ((a == 0x3C || a == 0x70) && i2c_khz > max_khz_disp) max_khz_disp = i2c_khz; }
 void HAL_GPIO_Init(GPIO_TypeDef *p, GPIO_InitTypeDef *g) { (void)p; (void)g; }
 int sim_i2c_busy = 0; static int sim_recover_pulses = 0;
@@ -65,8 +63,7 @@ HAL_StatusTypeDef HAL_I2C_Mem_Read(I2C_HandleTypeDef *h, uint16_t a, uint16_t me
 HAL_StatusTypeDef HAL_UART_Init(UART_HandleTypeDef *h) { (void)h; return HAL_OK; }
 HAL_StatusTypeDef HAL_UART_DeInit(UART_HandleTypeDef *h) { (void)h; return HAL_OK; }
 HAL_StatusTypeDef HAL_UART_Transmit_IT(UART_HandleTypeDef *h, uint8_t *d, uint16_t n) { (void)h; tx_ptr = d; tx_n = n; return HAL_OK; }
-HAL_StatusTypeDef HAL_UART_Receive_IT(UART_HandleTypeDef *h, uint8_t *d, uint16_t n) { (void)n; if (h->Instance == UART4) link_rx_ptr = d; else rx_ptr = d; return HAL_OK; }
-HAL_StatusTypeDef HAL_UART_Transmit(UART_HandleTypeDef *h, uint8_t *d, uint16_t n, uint32_t to) { (void)to; if (h->Instance == UART4 && link_outn + n < sizeof link_out) { memcpy(link_out + link_outn, d, n); link_outn += n; link_out[link_outn] = 0; } return HAL_OK; }
+HAL_StatusTypeDef HAL_UART_Receive_IT(UART_HandleTypeDef *h, uint8_t *d, uint16_t n) { (void)h; (void)n; rx_ptr = d; return HAL_OK; }
 HAL_StatusTypeDef HAL_UART_AbortReceive(UART_HandleTypeDef *h) { (void)h; return HAL_OK; }
 void HAL_UART_IRQHandler(UART_HandleTypeDef *h) { (void)h; }
 HAL_StatusTypeDef HAL_TIM_PWM_Init(TIM_HandleTypeDef *h) { (void)h; return HAL_OK; }
@@ -136,7 +133,6 @@ uint32_t HAL_GetTick(void) { if (free_tick || (auto_tick && state == ST_TERMINAT
 #endif
 
 /* ---------------- sim helpers ---------------- */
-static int ctl_mode = 0;
 static void service_isrs(void)
 {
     while (tx_n) {
@@ -149,7 +145,7 @@ static void service_isrs(void)
         HAL_UART_TxCpltCallback(&huart1);
     }
 }
-static void run_ms(uint32_t ms) { for (uint32_t i = 0; i < ms; i++) { tick++; if (ctl_mode) ctl_loop(); else app_loop(); service_isrs(); } }
+static void run_ms(uint32_t ms) { for (uint32_t i = 0; i < ms; i++) { tick++; app_loop(); service_isrs(); } }
 static void btn_edge(int level) { btn_level = level; HAL_GPIO_EXTI_Callback(BUTTON_EXTI13_Pin); }
 static void press(uint32_t hold_ms) { btn_edge(0); run_ms(hold_ms); btn_edge(1); }
 static void single(void) { run_ms(80); press(60); run_ms(700); }
@@ -158,9 +154,6 @@ static void type(const char *s) { for (; *s; s++) { *rx_ptr = (uint8_t)*s; HAL_U
 static void fw_tap(int idx) { sim_fw = (uint8_t)(1u << idx); run_ms(60); sim_fw = 0; run_ms(60); }
 static void fw_hold(int idx, uint32_t ms) { sim_fw = (uint8_t)(1u << idx); run_ms(ms); sim_fw = 0; run_ms(60); }
 static void clear_out(void) { outn = 0; out[0] = 0; }
-static void link_type(const char *s) { for (; *s; s++) { *link_rx_ptr = (uint8_t)*s; HAL_UART_RxCpltCallback(&huart4); } run_ms(2); }
-static void link_clear(void) { link_outn = 0; link_out[0] = 0; }
-static int  link_count(const char *needle) { int c = 0; const char *p = link_out; while ((p = strstr(p, needle))) { c++; p++; } return c; }
 static bool oled_has(int line, const char *txt) { return strstr(oled_text_cache[line], txt) != NULL; }
 static int count(const char *needle) { int c = 0; const char *p = out; while ((p = strstr(p, needle))) { c++; p++; } return c; }
 static const char *last(const char *needle) { const char *p = out, *r = ""; while ((p = strstr(p, needle))) { r = p; p++; } return r; }
@@ -177,7 +170,7 @@ int main(void)
     printf("== boot ==\n");
     cfg_load();
     app_init(); service_isrs();
-    CHECK(cfg.drone_id == 3 && cfg.role == ROLE_DRONE, "blank flash -> default Drone #3, role DRONE");
+    CHECK(cfg.drone_id == 3 && cfg.hiscore == 0, "blank flash -> default Drone #3, no high score");
     CHECK(strstr(out, "=== Drone #3 online === mount: chip-up, silent: OFF") != NULL, "boot banner");
     CHECK(strstr(out, "[EVT] 5-way at 0x03: 25 kHz, stop + read") != NULL, "5-way found at 25 kHz with the real ID byte order");
     if (getenv("DBG")) { printf("%s\n", out); for (int i = 0; i < 8; i++) printf("OLED%d [%s]\n", i, oled_text_cache[i]); }
@@ -187,7 +180,7 @@ int main(void)
     CHECK(strstr(out, "Entering STANDBY MODE") != NULL, "Entering STANDBY MODE");
     run_ms(150);
     CHECK(memcmp(mx_shown, GL_DIGIT[3], 8) == 0, "matrix shows drone number 3 at boot");
-    CHECK(oled_has(0, "== SYSTEM CHECK ==") && oled_has(3, "5-WAY        OK") && oled_has(4, "CONTROLLER   WAITING"), "OLED boot self-test page");
+    CHECK(oled_has(0, "== SYSTEM CHECK ==") && oled_has(3, "5-WAY        OK") && oled_has(4, "BEST SCORE   0"), "OLED boot self-test page");
     CHECK(strstr(out, "[TLM] T: 25.00 C, P: 1008.00 hPa, H: 60.00 %RH, A: 9.81 m/s^2, G: 1.00 dps, M: 41.23 uT\r\n") != NULL, "TLM has exactly 6 fields");
     CHECK(strstr(out, "[HUD]") == NULL && strstr(out, "[MAP]") == NULL, "no dashboard lines any more");
 
@@ -204,11 +197,12 @@ int main(void)
     s_hum = 60;
     run_ms(2500);
     clear_out(); single();
-    CHECK(strstr(out, "[REPORT] Drone #3: flight") && strstr(out, "habitat found 2x, zombies down 0, shots 0"), "single press -> scout report");
+    CHECK(strstr(out, "[EVT] Sonar ping 1/3: echo from") && pings_left == 2, "single press -> sonar ping 1/3");
+    CHECK(strstr(out, "[REPORT] Drone #3: flight") && strstr(out, "pings left 2/3, score 0, habitat found 2x, zombies down 0, shots 0"), "... plus the scout report");
     clear_out(); fw_tap(FIVEWAY_IDX_CENTER); run_ms(150);
     CHECK(oled_page == 1 && oled_has(0, "2/4") && oled_has(1, "NESTS FOUND   0/3"), "5-way centre short -> OLED page 2/4 = scouting");
     fw_tap(FIVEWAY_IDX_CENTER); run_ms(150);
-    CHECK(oled_page == 2 && oled_has(2, "ZOMBIES DOWN 0") && oled_has(5, "CONTROLLER NONE"), "page 3/4 = mission");
+    CHECK(oled_page == 2 && oled_has(1, "SCORE        0") && oled_has(2, "BEST         0") && oled_has(4, "ZOMBIES DOWN 0"), "page 3/4 = mission (score, best)");
     fw_tap(FIVEWAY_IDX_CENTER); run_ms(150);
     CHECK(oled_page == 3 && oled_has(1, "BLACK BOX: EMPTY"), "page 4/4 = black box (empty before the first sortie)");
     fw_tap(FIVEWAY_IDX_CENTER);
@@ -229,9 +223,29 @@ int main(void)
     fw_tap(FIVEWAY_IDX_UP);
     CHECK(strstr(out, "[EVT] Scouting: nest found at (3,4) (1/3)") && scout_found_n == 1, "3x3 scan finds the nest next to the drone");
     CHECK(!rbit(scout_fog, 2, 4) && !rbit(scout_fog, 4, 6) && rbit(scout_fog, 3, 3), "fog cleared only around the path");
+    CHECK(score == 20, "nest found: +20 points");
+
+    printf("== sonar ==\n");
+    run_ms(600);
+    clear_out(); type("PING\r");
+    CHECK(strstr(out, "[EVT] Sonar ping 1/3: echo from 4 cells NE") && pings_left == 2, "PING: nearest unfound nest (6,1) is 4 cells NE");
+    CHECK(snd_echo[1].ms == 490 && snd_echo[2].f0 == 1600 && bz_seq == snd_echo, "echo after 150+100*4 = 550 ms at 2600-250*4 = 1600 Hz");
+    CHECK(scout_found_n == 1 && rbit(scout_fog, 6, 1), "sonar does not reveal anything");
+    run_ms(190);
+    CHECK((mx_shown[2] & (0x80u >> 3)) && (mx_shown[5] & (0x80u >> 6)), "matrix: expanding ring around the scout");
+    run_ms(400);
+    CHECK((mx_shown[4] & (0x80u >> 4)) && (mx_shown[3] & (0x80u >> 5)) && (mx_shown[2] & (0x80u >> 6)) && (mx_shown[1] & (0x80u >> 7)),
+          "matrix: echo ray 4 cells towards NE");
+    fw_tap(FIVEWAY_IDX_CENTER); run_ms(150);
+    CHECK(oled_has(2, "PINGS LEFT    2/3") && oled_has(4, "ECHO: 4 CELLS NE"), "OLED scouting page: pings left + last echo");
+    fw_tap(FIVEWAY_IDX_CENTER); fw_tap(FIVEWAY_IDX_CENTER); fw_tap(FIVEWAY_IDX_CENTER);
+    run_ms(1000); type("PING\r"); run_ms(1000); type("PING\r"); run_ms(1000);
+    clear_out(); type("PING\r");
+    CHECK(pings_left == 0 && strstr(out, "[EVT] Sonar: no pings left in this area"), "only 3 pings per area");
     for (int i = 0; i < 3; i++) type("AIM 1 0\r");
     for (int i = 0; i < 3; i++) type("AIM 0 -1\r");
     CHECK(scout_x == 6 && scout_y == 2 && strstr(out, "nest found at (6,1) (2/3)"), "AIM over UART flies the scout too");
+    CHECK(score == 40, "second nest: score 40");
     run_ms(130);
     {
         uint32_t now = HAL_GetTick();
@@ -240,13 +254,18 @@ int main(void)
               "matrix: fog lit, scanned dark, drone blinking");
     }
     fw_tap(FIVEWAY_IDX_CENTER); run_ms(150);
-    CHECK(oled_has(1, "NESTS FOUND   2/3") && oled_has(3, "SCOUT AT (6,2)"), "OLED scouting page follows the map");
+    CHECK(oled_has(1, "NESTS FOUND   2/3") && oled_has(3, "(6,2)"), "OLED scouting page follows the map");
     fw_tap(FIVEWAY_IDX_CENTER); fw_tap(FIVEWAY_IDX_CENTER); fw_tap(FIVEWAY_IDX_CENTER);
     clear_out(); single();
-    CHECK(strstr(out, "area scanned") && strstr(out, "nests found 2/3"), "scout report shows scanned area and nests");
+    CHECK(strstr(out, "area scanned") && strstr(out, "nests found 2/3") && strstr(out, "score 40"), "scout report shows scanned area, nests, score");
+    pings_left = 2;
+    for (int i = 0; i < 6; i++) type("AIM -1 0\r");
+    for (int i = 0; i < 2; i++) type("AIM 0 -1\r");
+    CHECK(scout_found_n == 3 && score == 40 + 20 + 30 + 2 * 20 && strstr(out, "all 3 nests located, +70 bonus (2 pings left)"),
+          "all 3 found: +20, +30 bonus, +20 per unused ping");
     wave_start(1); service_isrs();
-    CHECK(map_count() == 11 && strstr(out, "[EVT] Wave 1 incoming: 3 outbreaks (2 scouted nests, bigger)"), "wave 1: scouted nests = plus of 5, unknown nest = 1 cell");
-    CHECK(cell(3, 3) && cell(3, 5) && cell(2, 4) && cell(4, 4) && cell(0, 0) && !cell(1, 0), "cluster shapes in the battle map");
+    CHECK(map_count() == 13 && strstr(out, "[EVT] Wave 1 incoming: 3 outbreaks (3 scouted nests, bigger)"), "wave 1: scouted nests = plus of 5 (clipped at the corner)");
+    CHECK(cell(3, 3) && cell(3, 5) && cell(2, 4) && cell(4, 4) && cell(0, 0) && cell(1, 0) && cell(0, 1), "cluster shapes in the battle map");
     map_live = false; memset(map_rows, 0, 8);
     scout_new();                                       /* back to a fresh area for the tests below */
 
@@ -288,6 +307,9 @@ int main(void)
     printf("== BATTLE: map, rule-mode laser ==\n");
     clear_out(); dbl();
     CHECK(state == ST_BATTLE && strstr(out, "Entering BATTLE MODE"), "double -> BATTLE");
+    CHECK(strstr(out, "[EVT] Unused sonar pings: +3/10 laser energy (0/10 -> 3/10)") && laser_energy == 3 && pings_left == 0,
+          "unused pings become laser energy");
+    laser_energy = 0;
     CHECK(map_count() == 3 && wave_no == 1 && strstr(out, "[EVT] Wave 1 incoming: 3 outbreaks, spreading every 3.0 s"), "wave 1 without scouting: 3 single-cell nests");
     CHECK(strstr(out, "[STAT] DRONE: #3, MODE: BATTLE, WAVE: 1") && strstr(out, "WEAPON: RULE 5/10"), "STAT on entering BATTLE");
     CHECK(bb.count == 2 && bb.rec[0].type == BB_SORTIE && bb.rec[1].type == BB_WAVE, "black box restarted at sortie start");
@@ -296,6 +318,18 @@ int main(void)
     int t0 = led_toggles; clear_out(); run_ms(2000);
     CHECK(led_toggles - t0 == 4, "LED 1 Hz in BATTLE");
     CHECK(count("[TLM]") == 0, "no periodic telemetry in BATTLE");
+    CHECK(beat_period() == 1200 - 850 * 3 / 48, "heartbeat period follows the number of infected cells");
+    bz_stop(); t_beat = HAL_GetTick() - 2000; run_ms(2);
+    CHECK(bz_playing(SND_HEART), "heartbeat plays when the buzzer is free");
+    {
+        uint8_t keep[8]; memcpy(keep, map_rows, 8);
+        memset(map_rows, 0, 8); cell_set(0, 0);
+        uint32_t slow = beat_period();
+        memset(map_rows, 0xFF, 6);
+        uint32_t fast = beat_period();
+        memcpy(map_rows, keep, 8);
+        CHECK(slow > 1150 && fast == 350, "heartbeat: ~1200 ms nearly empty, 350 ms at 75 %");
+    }
     CHECK(oled_has(0, "WAVE 1   TARGETS") && oled_has(3, "ENERGY  0/10 P5 RULE") && oled_text_cache[1][0] == '\x03', "OLED battle page with the energy bar");
     memset(map_rows, 0, 8);
     for (int y = 2; y <= 4; y++) for (int x = 2; x <= 4; x++) cell_set(x, y);   /* 3x3 block */
@@ -304,10 +338,11 @@ int main(void)
     clear_out(); single();
     CHECK(strstr(out, "[EVT] LASER charged: 0/10 -> 3/10") && laser_energy == 3, "rule mode: 0 -> 3");
     single();
-    CHECK(strstr(out, "LASER FIRED (5/10, BOOM) at (3,3): 9 cells cleared. Energy 6/10 -> 1/10") != NULL, "rule mode: auto-fire at 6, BOOM clears 3x3");
+    CHECK(strstr(out, "LASER FIRED (5/10, BOOM) at (3,3): 9 cells cleared, +90 points (x1). Energy 6/10 -> 1/10") != NULL, "rule mode: auto-fire at 6, BOOM clears 3x3, +90");
+    CHECK(!bz_playing(SND_HEART), "shot sound interrupts the heartbeat");
     CHECK(!cooldown_active && zombies_down == 9, "rule mode: no cooldown, 9 zombies down");
     run_ms(150);
-    CHECK(oled_has(6, "HIT! 9 CELLS CLEARED"), "OLED event line");
+    CHECK(oled_has(6, "HIT! 9 +90 x1") && oled_has(5, "SCORE 90"), "OLED event line + score");
 
     printf("== weapon power: 5-way hold and POWER ==\n");
     clear_out(); fw_hold(FIVEWAY_IDX_CENTER, 1100);
@@ -317,11 +352,11 @@ int main(void)
     memset(map_rows, 0, 8); cell_set(3, 3); cell_set(4, 3); cell_set(0, 7);
     aim_x = 3; aim_y = 3;
     clear_out(); single();
-    CHECK(strstr(out, "LASER FIRED (1/10, PIU) at (3,3): 1 cell cleared. Energy 3/10 -> 2/10") && !cooldown_active, "p=1: single cell, no cooldown");
+    CHECK(strstr(out, "LASER FIRED (1/10, PIU) at (3,3): 1 cell cleared, +10 points (x1). Energy 3/10 -> 2/10") && !cooldown_active, "p=1: single cell, no cooldown (miss before reset the streak)");
     fw_tap(FIVEWAY_IDX_RIGHT);
     CHECK(aim_x == 4 && aim_y == 3, "5-way right moves the crosshair");
     clear_out(); single();
-    CHECK(strstr(out, "(1/10, PIU) at (4,3): 1 cell cleared") && strstr(out, "Energy 5/10 -> 4/10"), "p=1 fires every press, leftover kept");
+    CHECK(strstr(out, "(1/10, PIU) at (4,3): 1 cell cleared, +20 points (x2)") && strstr(out, "Energy 5/10 -> 4/10"), "p=1 fires every press, leftover kept, streak x2");
     clear_out(); type("POWER 3\r");
     CHECK(weapon_power() == 3 && strstr(out, "power 3/10 (PEW), cooldown 3 s"), "POWER 3");
     CHECK(strstr(out, "FIRED (3/10, PEW)") && cooldown_active && laser_energy == 1, "POWER change auto-fires when energy is enough");
@@ -342,28 +377,21 @@ int main(void)
     clear_out(); type("POWER 7\r");
     CHECK(strstr(out, "ERR usage: POWER") != NULL, "POWER 7 rejected");
 
-    printf("== wired pilot controller (UART4) on the drone ==\n");
-    clear_out(); link_clear(); run_ms(600);
-    CHECK(link_count("LINK BATTLE\n") >= 2, "drone sends LINK <mode> every 250 ms");
-    link_type("ALIVE\n");
-    CHECK(link_up && strstr(out, "[EVT] Pilot controller connected"), "first line from the controller -> connected");
+    printf("== AIM / LOCK over UART ==\n");
     memset(map_rows, 0, 8); cell_set(6, 1); cell_set(0, 7);
     aim_x = 3; aim_y = 3;
-    clear_out(); link_type("TILT 1 0\n"); link_type("TILT 1 -1\n"); link_type("TILT 5 0\n");
-    CHECK(aim_x == 6 && aim_y == 2 && strstr(out, "[EVT]") == NULL, "TILT moves the crosshair 1 cell per line");
-    for (int i = 0; i < 10; i++) link_type("TILT 1 0\n");
+    clear_out(); type("AIM 1 0\r"); type("AIM 1 -1\r"); type("AIM 5 0\r");
+    CHECK(aim_x == 6 && aim_y == 2 && strstr(out, "[EVT]") == NULL, "AIM moves the crosshair 1 cell per command");
+    for (int i = 0; i < 10; i++) type("AIM 1 0\r");
     CHECK(aim_x == 7, "crosshair stops at the edge");
-    clear_out(); link_type("BTN SINGLE\n");
-    CHECK(strstr(out, "[EVT] Target locked at (6,1)") && aim_x == 6 && aim_y == 1, "controller single -> lock nearest target");
-    clear_out(); link_type("BTN DOUBLE\n");
-    CHECK(strstr(out, "Weapon: power 1/10") && weapon_sel, "controller double in BATTLE -> weapon power");
-    type("POWER RULE\r");
+    clear_out(); type("LOCK\r");
+    CHECK(strstr(out, "[EVT] Target locked at (6,1)") && aim_x == 6 && aim_y == 1, "LOCK -> nearest target");
     clear_out(); type("RESCUE\r");
     CHECK(strstr(out, "ERR not allowed in BATTLE") != NULL, "RESCUE only when attacked");
-    clear_out(); run_ms(3100);
-    CHECK(!link_up && strstr(out, "[EVT] Pilot controller lost"), "no line for 3 s -> controller lost");
+    clear_out(); type("PING\r");
+    CHECK(strstr(out, "ERR not allowed in BATTLE") != NULL, "PING only in STANDBY");
 
-    printf("== auto-aim without 5-way or controller ==\n");
+    printf("== auto-aim without 5-way ==\n");
     {
         uint8_t keep = fiveway_addr;
         fiveway_addr = 0; aim_manual = false;
@@ -412,9 +440,8 @@ int main(void)
     CHECK(laser_energy == e, "single ignored while attacked");
     clear_out(); fw_hold(FIVEWAY_IDX_CENTER, 1100); type("AIM 1 0\r");
     CHECK(strstr(out, "Weapon") == NULL && strstr(out, "ERR not allowed in ATTACKED"), "5-way and AIM ignored while attacked");
-    clear_out(); link_type("BTN DOUBLE\n");
-    CHECK(state == ST_BATTLE && strstr(out, "Lab rescue team dispatched by the pilot") && strstr(out, "Drone #3 rescued!") &&
-          map_count() == cells_before, "controller double while attacked = rescue team, map kept");
+    clear_out(); type("RESCUE\r");
+    CHECK(state == ST_BATTLE && strstr(out, "Drone #3 rescued!") && map_count() == cells_before, "RESCUE command rescues, map kept");
     run_ms(1000);
     CHECK(state == ST_BATTLE, "still upside down after rescue: not re-attacked");
     s_acc[2] = 1000; run_ms(300);
@@ -424,8 +451,18 @@ int main(void)
     CHECK(state == ST_BATTLE && strstr(out, "rescued"), "double press rescues too");
     s_acc[2] = 1000; run_ms(300);
 
-    printf("== back to STANDBY + BLACKBOX ==\n");
+    printf("== back to STANDBY: score + BLACKBOX ==\n");
+    uint32_t sortie_score = score;
     clear_out(); dbl();
+    {
+        char want[64];
+        snprintf(want, sizeof want, "[EVT] NEW HIGH SCORE: %lu (was 0)", (unsigned long)sortie_score);
+        CHECK(sortie_score > 0 && strstr(out, "[EVT] Mission score:") && strstr(out, want) && cfg.hiscore == sortie_score && score == 0,
+              "score settled on return: new high score, then reset for the new area");
+        CHECK(bz_seq == SND_HISCORE, "high-score jingle");
+        cfg.hiscore = 1; cfg_load();
+        CHECK(cfg.hiscore == sortie_score, "high score saved in flash");
+    }
     CHECK(state == ST_STANDBY && !map_live && scout_found_n == 0, "double -> STANDBY, map wiped, new area to scout");
     clear_out(); type("BLACKBOX\r");
     CHECK(strstr(out, "LAST MISSION: waves cleared 1, shots fired") && strstr(out, "END: RETURNED"), "black box summary (RETURNED)");
@@ -435,6 +472,10 @@ int main(void)
     CHECK(bb_view == 2 && oled_has(5, "EVT 03/") && oled_has(4, "END: RETURNED") && scout_x == 3, "OLED black box page: left/right browse (scout does not move)");
     oled_page = 0;
     weapon_sel = true; weapon_p = 2;
+    run_ms(1500);
+    clear_out(); type("HISCORE RESET\r");
+    CHECK(strstr(out, "[CMD] OK HISCORE 0 (saved)") && cfg.hiscore == 0, "HISCORE RESET");
+    cfg.hiscore = sortie_score; cfg_save();
     dbl(); clear_out(); type("BLACKBOX\r");
     CHECK(strstr(out, "ERR not allowed in BATTLE") != NULL, "BLACKBOX not allowed in BATTLE");
     CHECK(!weapon_sel && weapon_power() == 5, "new sortie starts in RULE mode");
@@ -450,67 +491,22 @@ int main(void)
     single();
     clear_out(); s_acc[2] = -1000; run_ms(500);
     CHECK(state == ST_ATTACKED, "attacked");
+    cfg.hiscore = 999999;                                  /* no new record: config page untouched */
     int cfg_erases = erase_count[0];
-    link_clear();
     if (setjmp(jmp_end) == 0) { auto_tick = 1; run_ms(11000); }
     auto_tick = 0;
     CHECK(count("Was Attacked!") == 10, "10 attack messages");
     CHECK(strstr(out, "[EVT] Drone #3: no rescue. Black box saved. Self-destructing. Cutting all communication.") != NULL, "last message");
-    CHECK(standby_entered && !uart_enabled && !link_ready && strstr(link_out, "LINK TERMINATED\n"), "comms cut (USART1 + UART4, controller told first), MCU Standby");
+    CHECK(strstr(out, "[EVT] Mission score:") != NULL, "score settled before self-destruct");
+    CHECK(standby_entered && !uart_enabled, "comms cut, MCU Standby");
     CHECK(oled_has(1, "DRONE #3 LOST") && oled_has(3, "COMMS OFFLINE") && oled_dirty == 0, "OLED left on the final screen");
     CHECK(erase_count[0] == cfg_erases, "black box save does not touch the config page");
     bb_flash_check();
     CHECK(bb_flash_valid && bb_flash_image()->drone_id == 3, "black box valid in flash after self-destruct");
     cfg.drone_id = 9; cfg_load();
-    CHECK(cfg.drone_id == 3, "config still valid after self-destruct");
+    CHECK(cfg.drone_id == 3 && cfg.hiscore == sortie_score, "config + high score still valid after self-destruct");
     uart_enabled = true; clear_out(); bb_print(bb_flash_image(), "Recovered from flash"); service_isrs();
     CHECK(strstr(out, "FLIPPED") && strstr(out, "SELF-DESTRUCT (no rescue)") && strstr(out, "END: RESCUE TIMEOUT"), "flash black box readable after reset");
-
-    printf("== ROLE CONTROLLER (board 2) ==\n");
-    state = ST_STANDBY; standby_entered = 0; s_acc[2] = 1000;
-    clear_out();
-    if (setjmp(jmp_end) == 0) { free_tick = 1; type("ROLE CONTROLLER\r"); }
-    free_tick = 0;
-    CHECK(reset_called && strstr(out, "[CMD] OK ROLE CONTROLLER (saved)"), "ROLE CONTROLLER saved, board restarts");
-    cfg.role = ROLE_DRONE; cfg_load();
-    CHECK(cfg.role == ROLE_CONTROLLER && cfg.drone_id == 3, "after reset: role CONTROLLER read from flash");
-    cmd_len = 0; clear_out(); link_clear(); ctl_mode = 1; s_acc[0] = 0; s_acc[1] = 0; s_acc[2] = 1000;
-    ctl_init(); run_ms(100);
-    CHECK(strstr(out, "=== Pilot controller online ===") != NULL && link_ready, "controller banner, UART4 link up");
-    CHECK(!led, "LED off while no drone link");
-    clear_out(); link_clear(); s_acc[0] = -500; s_acc[2] = 866; run_ms(400);           /* 30 deg, right edge down */
-    CHECK(link_count("TILT 1 0\n") >= 2 && link_count("TILT 1 0\n") <= 4 && strstr(out, "[CTL] TILT 1 0"), "tilt right -> TILT 1 0 on the wire every 150 ms (echoed on USB)");
-    clear_out(); link_clear(); s_acc[0] = -260; s_acc[2] = 966; run_ms(300);           /* 15 deg: inside hysteresis */
-    CHECK(strstr(link_out, "TILT 1 0") != NULL, "hysteresis: 15 deg keeps the tilt");
-    link_clear(); s_acc[0] = 0; s_acc[2] = 1000; run_ms(300);
-    CHECK(strstr(link_out, "TILT") == NULL, "level -> no TILT");
-    link_clear(); s_acc[1] = -500; s_acc[2] = 866; run_ms(100);           /* top edge down */
-    CHECK(strstr(link_out, "TILT 0 -1") != NULL, "tilt forward -> TILT 0 -1");
-    s_acc[1] = 0; s_acc[2] = 1000; run_ms(100);
-    link_clear(); single();
-    CHECK(strstr(link_out, "BTN SINGLE\n") != NULL, "single press -> BTN SINGLE on the wire");
-    link_clear(); dbl(); run_ms(600);
-    CHECK(strstr(link_out, "BTN DOUBLE\n") != NULL && strstr(link_out, "BTN SINGLE") == NULL, "double press -> BTN DOUBLE");
-    CHECK(strstr(link_out, "ALIVE\n") != NULL, "periodic ALIVE on the wire");
-    link_type("LINK STANDBY\n"); run_ms(100);
-    CHECK(led, "LINK STANDBY from the drone -> LED solid");
-    t0 = led_toggles;
-    for (int i = 0; i < 8; i++) { link_type("LINK BATTLE\n"); run_ms(245); }
-    CHECK(led_toggles - t0 >= 3 && led_toggles - t0 <= 5, "LINK BATTLE -> LED 1 Hz");
-    t0 = led_toggles;
-    for (int i = 0; i < 8; i++) { link_type("LINK ATTACKED\n"); run_ms(245); }
-    CHECK(led_toggles - t0 >= 7 && led_toggles - t0 <= 9, "LINK ATTACKED -> LED 2 Hz");
-    run_ms(2100);
-    CHECK(!led, "no LINK for 2 s -> LED off");
-    clear_out(); type("STATUS\r");
-    CHECK(strstr(out, "[STAT] CONTROLLER: tilt x 0 deg, y 0 deg, link NONE") != NULL, "controller STATUS");
-    clear_out(); type("CHARGE\r");
-    CHECK(strstr(out, "ERR unknown command 'CHARGE'") != NULL, "drone commands rejected on the controller");
-    reset_called = 0;
-    if (setjmp(jmp_end) == 0) { free_tick = 1; type("ROLE DRONE\r"); }
-    free_tick = 0;
-    cfg_load();
-    CHECK(reset_called && cfg.role == ROLE_DRONE, "ROLE DRONE switches back");
 
     printf("\n%s: %d failure(s)\n", fails ? "FAILED" : "ALL PASSED", fails);
     return fails ? 1 : 0;

@@ -1,7 +1,6 @@
 /* Real-time runner: firmware UART on a pty, sim inputs on a control FIFO.
  *   simrt <uart-pty> <control-fifo> <flash-file>
  * Control lines: press | dbl | flip | unflip | tilt ax ay az (mg) | fw <idx> <ms> | quit
- * (the UART4 controller link is not wired in this runner)
  *
  * Build (after run_tests.sh created build/):  gcc -std=gnu11 -Istub -Ibuild -o build/simrt simrt.c -lm
  * Talk to it on Linux:
@@ -56,7 +55,7 @@ int main(int argc, char **argv)
 
     HAL_GetTick();
     cfg_load();
-    if (cfg.role == ROLE_CONTROLLER) { ctl_mode = 1; ctl_init(); } else app_init();
+    app_init();
     for (;;) {
         HAL_GetTick();
         uint8_t ch;
@@ -70,7 +69,7 @@ int main(int argc, char **argv)
         if (press_until && tick >= press_until) { btn_edge(1); press_until = 0; }
         if (press2_at && tick >= press2_at) { btn_edge(0); press_until = tick + 60; press2_at = 0; }
         if (fw_until && tick >= fw_until) { sim_fw = 0; fw_until = 0; }
-        if (ctl_mode) ctl_loop(); else app_loop();
+        app_loop();
         service_isrs();
         usleep(300);
     }
