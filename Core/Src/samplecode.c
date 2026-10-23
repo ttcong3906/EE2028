@@ -1,32 +1,3 @@
-/******************************************************************************
- * @file    main.c   (kept as samplecode.c in the repo: reference only)
- * @brief   EE2028 Assignment 2 (AY26/27 S1) - "The Last of EE2028"
- *          Firmware for an autonomous attacking drone on the B-L4S5I-IOT01A.
- *
- * Full behaviour: docs/SPEC.md (v4). One board, the assignment + 4 Grove
- * modules: LED matrix (map), OLED (text), buzzer (sound + music), 5-way (control).
- *
- *   STANDBY   scouting: 6-sensor telemetry (spec), fly the scout over a fogged
- *             8x8 area with the 5-way, sonar ping with an echo (single press)
- *             to find 3 hidden nests, human-habitat finder (T + H)
- *   BATTLE    shoot zombies on the LED matrix: scouted nests are bigger, aim
- *             with the 5-way, laser charge/auto-fire (spec), weapon power,
- *             waves, score with a hit-streak multiplier, heartbeat music that
- *             speeds up with the danger
- *   ATTACKED  "The Last of EE2028" (spec) + Morse SOS, OLED countdown
- *   TERMINATED score + black box saved to flash, comms cut (spec), MCU Standby
- *
- * Wiring (Grove Base Shield): D6 buzzer (PB1, TIM3_CH4 PWM);
- *   I2C: LED matrix 0x70, OLED 0x3C, 5-way switch 0x03
- *
- * Design rules:
- *   - Super-loop, fully non-blocking, all timing from HAL_GetTick().
- *   - ISRs only record timestamps / flags / bytes. No I2C, no blocking UART,
- *     no HAL_Delay inside interrupts.
- *   - Every external module and the laptop are optional: the
- *     drone alone still behaves exactly as the assignment specifies.
- ******************************************************************************/
-
 /* ============================================================================
  * 0. INCLUDES
  * ==========================================================================*/
