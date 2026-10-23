@@ -33,7 +33,7 @@ GPIO_PinState HAL_GPIO_ReadPin(GPIO_TypeDef *p, uint16_t pin);
 #define __HAL_RCC_I2C1_CLK_ENABLE() ((void)0)
 #define __HAL_RCC_TIM3_CLK_ENABLE() ((void)0)
 #define __HAL_RCC_USART1_CLK_ENABLE() ((void)0)
-typedef struct { int id; } PERIPH;
+typedef struct { int id; uint32_t CR1, TIMINGR; } PERIPH;
 extern PERIPH sim_i2c1, sim_usart1, sim_tim3, sim_uart4;
 #define UART4 (&sim_uart4)
 #define I2C1 (&sim_i2c1)
@@ -76,6 +76,8 @@ uint32_t HAL_GetTick(void);
 HAL_StatusTypeDef HAL_Init(void);
 static inline void __disable_irq(void) {}
 static inline void __enable_irq(void) {}
+static inline uint32_t __get_PRIMASK(void) { return 0; }
+static inline void __set_PRIMASK(uint32_t m) { (void)m; }
 static inline void __WFI(void) {}
 typedef enum { LED2 = 0 } Led_TypeDef;
 void BSP_LED_Init(Led_TypeDef l); void BSP_LED_On(Led_TypeDef l); void BSP_LED_Off(Led_TypeDef l);
@@ -141,6 +143,9 @@ void NVIC_SystemReset(void);
 #define I2C_FLAG_BUSY 0x8000u
 extern int sim_i2c_busy;
 #define __HAL_I2C_GET_FLAG(h, f) (sim_i2c_busy ? 1 : 0)
+#define I2C_CR1_PE 1u
+#define __HAL_I2C_ENABLE(h)  ((h)->Instance->CR1 |= I2C_CR1_PE)
+#define __HAL_I2C_DISABLE(h) ((h)->Instance->CR1 &= ~I2C_CR1_PE)
 enum { GPIO_MODE_OUTPUT_OD = 200 };
 HAL_StatusTypeDef HAL_I2C_DeInit(I2C_HandleTypeDef *h);
 void HAL_GPIO_WritePin(GPIO_TypeDef *p, uint16_t pin, GPIO_PinState s);

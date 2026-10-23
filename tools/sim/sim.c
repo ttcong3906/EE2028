@@ -35,13 +35,21 @@ static int erase_count[2];          /* [0] page 254, [1] page 255 */
 
 static int sim_oled_present = 1;
 static int max_khz_fw = 0, max_khz_disp = 0;      /* fastest speed seen per device */
-static void note_speed(uint16_t a) { if (a == 0x03 && i2c_khz > max_khz_fw) max_khz_fw = i2c_khz; if ((a == 0x3C || a == 0x70) && i2c_khz > max_khz_disp) max_khz_disp = i2c_khz; }
+static int sim_bad_xfer = 0;                      /* transfers with I2C1 disabled or unknown timing */
+static int bus_khz(void) { return sim_i2c1.TIMINGR == 0x00420F13u ? 100 : (sim_i2c1.TIMINGR == 0x30420F13u ? 25 : -1); }
+static void note_speed(uint16_t a)
+{
+    int k = bus_khz();
+    if (!(sim_i2c1.CR1 & I2C_CR1_PE) || k < 0) sim_bad_xfer++;
+    if (a == 0x03 && k > max_khz_fw) max_khz_fw = k;
+    if ((a == 0x3C || a == 0x70) && k > max_khz_disp) max_khz_disp = k;
+}
 void HAL_GPIO_Init(GPIO_TypeDef *p, GPIO_InitTypeDef *g) { (void)p; (void)g; }
 int sim_i2c_busy = 0; static int sim_recover_pulses = 0;
-HAL_StatusTypeDef HAL_I2C_DeInit(I2C_HandleTypeDef *h) { (void)h; return HAL_OK; }
+HAL_StatusTypeDef HAL_I2C_DeInit(I2C_HandleTypeDef *h) { h->Instance->CR1 = 0; return HAL_OK; }
 void HAL_GPIO_WritePin(GPIO_TypeDef *p, uint16_t pin, GPIO_PinState st) { if (p == GPIOB && pin == GPIO_PIN_8 && st == GPIO_PIN_SET) { sim_recover_pulses++; sim_i2c_busy = 0; } }
 GPIO_PinState HAL_GPIO_ReadPin(GPIO_TypeDef *p, uint16_t pin) { (void)pin; if (p == GPIOB) return sim_i2c_busy && pin == GPIO_PIN_9 ? GPIO_PIN_RESET : GPIO_PIN_SET; return btn_level ? GPIO_PIN_SET : GPIO_PIN_RESET; }
-HAL_StatusTypeDef HAL_I2C_Init(I2C_HandleTypeDef *h) { (void)h; return HAL_OK; }
+HAL_StatusTypeDef HAL_I2C_Init(I2C_HandleTypeDef *h) { h->Instance->TIMINGR = h->Init.Timing; h->Instance->CR1 |= I2C_CR1_PE; return HAL_OK; }
 HAL_StatusTypeDef HAL_I2C_IsDeviceReady(I2C_HandleTypeDef *h, uint16_t a, uint32_t t, uint32_t to) { (void)h;(void)t;(void)to; a >>= 1; if (sim_i2c_busy) return HAL_ERROR; note_speed(a); return ((a == 0x03 && sim_fiveway_present) || a == 0x70 || (a == 0x3C && sim_oled_present)) ? HAL_OK : HAL_ERROR; }
 HAL_StatusTypeDef HAL_I2C_Master_Transmit(I2C_HandleTypeDef *h, uint16_t a, uint8_t *d, uint16_t n, uint32_t to) { (void)h;(void)to; a >>= 1; if (sim_i2c_busy) return HAL_ERROR; if (a == 0x03 && !sim_fiveway_present) return HAL_ERROR; note_speed(a); if (n >= 1) last_cmd[a & 127] = d[0]; return (a == 0x03 || a == 0x70 || (a == 0x3C && sim_oled_present)) ? HAL_OK : HAL_ERROR; }
 HAL_StatusTypeDef HAL_I2C_Master_Receive(I2C_HandleTypeDef *h, uint16_t a, uint8_t *d, uint16_t n, uint32_t to)
@@ -270,6 +278,7 @@ int main(void)
 
     printf("== I2C bus ==\n");
     CHECK(max_khz_fw == 25 && max_khz_disp == 100, "per-device speed: 5-way only ever at 25 kHz, displays at 100 kHz");
+    CHECK(sim_bad_xfer == 0, "speed switch rewrites TIMINGR with I2C1 re-enabled before every transfer");
     clear_out(); sim_stuck_next_read = 1; run_ms(100);
     CHECK(sim_recover_pulses > 0 && !sim_i2c_busy, "5-way read times out with SDA held low -> bus recovered");
     CHECK(i2c1_present(0x3C) && i2c1_present(0x70) && fiveway_addr == 0x03, "after recovery all modules answer again");
@@ -277,7 +286,11 @@ int main(void)
     CHECK(fiveway_addr == 0 && strstr(out, "[EVT] 5-way switch lost"), "unplugged 5-way detected");
     sim_fiveway_present = 1; clear_out(); run_ms(2100);
     CHECK(fiveway_addr == 0x03 && strstr(out, "[EVT] 5-way switch connected at 0x03"), "re-plugged 5-way found again in STANDBY");
-    sim_oled_present = 0; oled_ok = false; sim_oled_present = 1; clear_out(); run_ms(2100);
+    sim_oled_present = 0; oled_dirty = 0xFF; clear_out(); run_ms(300);
+    CHECK(!oled_ok && strstr(out, "[EVT] OLED lost"), "unplugged OLED detected (no endless retries)");
+    oled_ok = true; oled_dirty = 0xFF; oled_flush_all();
+    CHECK(oled_dirty != 0, "oled_flush_all gives up on a missing OLED (self-destruct cannot hang)");
+    oled_ok = false; sim_oled_present = 1; clear_out(); run_ms(2100);
     CHECK(oled_ok && strstr(out, "[EVT] OLED connected"), "OLED plugged in later is found in STANDBY");
 
     printf("== configuration (flash) ==\n");
@@ -299,8 +312,9 @@ int main(void)
     run_ms(1100);
 
     printf("== BATTLE: map, rule-mode laser ==\n");
-    clear_out(); dbl();
-    CHECK(state == ST_BATTLE && strstr(out, "Entering BATTLE MODE"), "double -> BATTLE");
+    clear_out(); btn_doubles = 2; run_ms(5);
+    CHECK(state == ST_BATTLE && count("Entering BATTLE MODE") == 1 && !strstr(out, "Entering STANDBY"),
+          "two queued doubles: only the first acts (stops at the mode change)");
     CHECK(strstr(out, "[EVT] Unused sonar pings: +3/10 laser energy (0/10 -> 3/10)") && laser_energy == 3 && pings_left == 0,
           "unused pings become laser energy");
     laser_energy = 0;
@@ -404,9 +418,12 @@ int main(void)
     CHECK(!wave_active && strstr(out, "[EVT] Wave 1 cleared! AREA CLEARED") && bb.waves == 1, "AREA CLEARED");
     run_ms(400);
     CHECK(memcmp(mx_shown, GL_CHECK, 8) == 0 && oled_has(0, "WAVE 1   CLEARED!"), "matrix check mark + OLED during the pause");
+    laser_energy = 4; clear_out(); single();
+    CHECK(strstr(out, "charged: 4/10 -> 7/10") && !strstr(out, "FIRED") && laser_energy == 7, "no shot into an empty map during the pause");
     clear_out(); run_ms(2000);
-    CHECK(wave_active && wave_no == 2 && map_count() == 4 && spread_ms == 2750 &&
+    CHECK(wave_active && wave_no == 2 && spread_ms == 2750 &&
           strstr(out, "[EVT] Wave 2 incoming: 4 outbreaks, spreading every 2.7 s"), "wave 2: 4 outbreaks, faster spread");
+    CHECK(strstr(out, "FIRED (5/10, BOOM)") && laser_energy == 2, "stored energy fires as soon as the next wave appears");
 
     printf("== BATTLE: spread, overrun ==\n");
     memset(map_rows, 0, 8); cell_set(1, 1); t_spread = HAL_GetTick();

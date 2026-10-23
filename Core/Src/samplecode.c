@@ -263,6 +263,7 @@ static void uart_kick(void)
 static void uart_write_raw(const char *s)
 {
     if (!uart_enabled) return;
+    uint32_t pm = __get_PRIMASK();          /* may be called with IRQs already off */
     __disable_irq();
     while (*s) {
         uint16_t next = (uint16_t)((tx_head + 1U) % TX_BUF_SIZE);
@@ -271,7 +272,7 @@ static void uart_write_raw(const char *s)
         tx_head = next;
     }
     uart_kick();
-    __enable_irq();
+    __set_PRIMASK(pm);
 }
 
 /* Console-aware output: if a command is half typed, erase that line
@@ -448,6 +449,11 @@ static bool i2c1_ready = false;
 static int  i2c_khz = I2C_FIVEWAY_KHZ;
 static bool oled_ok = false;
 
+static uint32_t i2c_timing(void)
+{
+    return (i2c_khz >= 100) ? I2C_TIMING_100K : I2C_TIMING_25K;
+}
+
 static void I2C1_Init(void)
 {
     __HAL_RCC_GPIOB_CLK_ENABLE();
@@ -462,7 +468,7 @@ static void I2C1_Init(void)
     HAL_GPIO_Init(GPIOB, &g);
 
     hi2c1.Instance              = I2C1;
-    hi2c1.Init.Timing           = (i2c_khz >= 100) ? I2C_TIMING_100K : I2C_TIMING_25K;
+    hi2c1.Init.Timing           = i2c_timing();
     hi2c1.Init.OwnAddress1      = 0;
     hi2c1.Init.AddressingMode   = I2C_ADDRESSINGMODE_7BIT;
     hi2c1.Init.DualAddressMode  = I2C_DUALADDRESS_DISABLE;
@@ -472,18 +478,24 @@ static void I2C1_Init(void)
     i2c1_ready = (HAL_I2C_Init(&hi2c1) == HAL_OK);
 }
 
-static void i2c_for(int khz)
-{
-    if (i2c_khz == khz) return;
-    i2c_khz = khz;
-    HAL_I2C_DeInit(&hi2c1);
-    I2C1_Init();
-}
-
 /* Short busy wait (roughly microseconds at 4 MHz), no SysTick needed. */
 static void i2c_gap(uint32_t n)
 {
     for (volatile uint32_t i = 0; i < n; i++) { }
+}
+
+/* Change the bus speed between transfers. TIMINGR may only be written while
+ * the peripheral is disabled (PE = 0), and PE must stay low for 3 APB clocks. */
+static void i2c_for(int khz)
+{
+    if (i2c_khz == khz) return;
+    i2c_khz = khz;
+    hi2c1.Init.Timing = i2c_timing();
+    if (!i2c1_ready) return;
+    __HAL_I2C_DISABLE(&hi2c1);
+    i2c_gap(2);
+    hi2c1.Instance->TIMINGR = hi2c1.Init.Timing;
+    __HAL_I2C_ENABLE(&hi2c1);
 }
 
 /* A slave left half-way through a transfer (e.g. after a timeout) can hold
@@ -797,7 +809,16 @@ static void oled_flush_step(void)
             uint8_t buf[129];
             buf[0] = 0x40;
             memcpy(&buf[1], oled_fb[p], 128);
-            if (!i2c1_write(OLED_I2C_ADDR, buf, sizeof(buf))) return;   /* retry next pass */
+            static uint8_t fails = 0;
+            if (!i2c1_write(OLED_I2C_ADDR, buf, sizeof(buf))) {     /* retry next pass */
+                if (++fails >= 10) {                                /* unplugged */
+                    fails = 0;
+                    oled_ok = false;
+                    uart_write("[EVT] OLED lost (no answer on I2C)\r\n");
+                }
+                return;
+            }
+            fails = 0;
             oled_dirty &= (uint8_t)~(1U << p);
             return;
         }
@@ -805,10 +826,11 @@ static void oled_flush_step(void)
 #endif
 }
 
+/* Bounded: a missing OLED must never stop the self-destruct sequence. */
 static void oled_flush_all(void)
 {
 #if ENABLE_OLED
-    while (oled_ok && oled_dirty) oled_flush_step();
+    for (int i = 0; i < 2 * OLED_LINES && oled_ok && oled_dirty; i++) oled_flush_step();
 #endif
 }
 
@@ -1165,6 +1187,7 @@ void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin)
 
 static void button_collect(uint8_t *singles, uint8_t *doubles)
 {
+    uint32_t pm = __get_PRIMASK();
     __disable_irq();
     if (btn_pending && elapsed(btn_first_t, DOUBLE_PRESS_MS)) {
         btn_pending = 0;
@@ -1172,7 +1195,7 @@ static void button_collect(uint8_t *singles, uint8_t *doubles)
     }
     *singles = btn_singles;  btn_singles = 0;
     *doubles = btn_doubles;  btn_doubles = 0;
-    __enable_irq();
+    __set_PRIMASK(pm);
 }
 
 /* ============================================================================
@@ -1280,17 +1303,23 @@ static bool     fire_anim = false;
 static int      fire_x = 0, fire_y = 0;
 static uint8_t  blast_rows[8];
 
-static inline bool cell(int x, int y)       { return (map_rows[y] & (0x80U >> x)) != 0; }
-static inline void cell_set(int x, int y)   { map_rows[y] |= (uint8_t)(0x80U >> x); }
-static inline void cell_clr(int x, int y)   { map_rows[y] &= (uint8_t)~(0x80U >> x); }
-static inline bool inside(int x, int y)     { return x >= 0 && x < 8 && y >= 0 && y < 8; }
-
-static int map_count(void)
+/* 8x8 bitmaps (battle map, fog, nests): row y, bit7 = column 0. */
+static inline bool rbit(const uint8_t r[8], int x, int y) { return (r[y] & (0x80U >> x)) != 0; }
+static inline void rset(uint8_t r[8], int x, int y)       { r[y] |= (uint8_t)(0x80U >> x); }
+static inline void rclr(uint8_t r[8], int x, int y)       { r[y] &= (uint8_t)~(0x80U >> x); }
+static int popcount8(const uint8_t r[8])
 {
     int n = 0;
-    for (int y = 0; y < 8; y++) for (int x = 0; x < 8; x++) n += cell(x, y);
+    for (int y = 0; y < 8; y++) n += __builtin_popcount(r[y]);
     return n;
 }
+
+static inline bool cell(int x, int y)       { return rbit(map_rows, x, y); }
+static inline void cell_set(int x, int y)   { rset(map_rows, x, y); }
+static inline void cell_clr(int x, int y)   { rclr(map_rows, x, y); }
+static inline bool inside(int x, int y)     { return x >= 0 && x < 8 && y >= 0 && y < 8; }
+static inline int  clamp07(int v)           { return v < 0 ? 0 : (v > 7 ? 7 : v); }
+static int map_count(void)                  { return popcount8(map_rows); }
 
 static void event_text(const char *t, uint8_t prio);   /* section 13 */
 
@@ -1302,18 +1331,6 @@ static int      scout_x = 3, scout_y = 7, scout_found_n = 0;
 static bool     scout_ready = false;
 static int      pings_left = SONAR_PINGS;
 static char     last_echo[24] = "";
-static bool     scout_changed = true;
-
-static inline bool rbit(const uint8_t r[8], int x, int y) { return (r[y] & (0x80U >> x)) != 0; }
-static inline void rset(uint8_t r[8], int x, int y)       { r[y] |= (uint8_t)(0x80U >> x); }
-static inline void rclr(uint8_t r[8], int x, int y)       { r[y] &= (uint8_t)~(0x80U >> x); }
-
-static int popcount8(const uint8_t r[8])
-{
-    int n = 0;
-    for (int y = 0; y < 8; y++) for (int x = 0; x < 8; x++) n += rbit(r, x, y);
-    return n;
-}
 
 /* Wave n: 2 + n outbreaks in the far half of the map, spreading faster each wave.
  * Wave 1 uses the scouted area: located nests are bigger (plus of 5 cells),
@@ -1449,7 +1466,6 @@ static void scout_scan(bool announce)
             }
         }
     }
-    scout_changed = true;
 }
 
 /* New area: everything under fog, nests hidden in rows 0..5, drone at the bottom. */
@@ -2045,11 +2061,16 @@ static void laser_fire(void)
     if (map_count() < MAP_OVERRUN_CELLS) overrun_reported = false;
 }
 
-/* Auto-fire: one shot whenever energy is sufficient and the gun is not cooling. */
+/* Auto-fire rule: enough energy, gun not cooling, and zombies on the map
+ * (energy is kept during the AREA CLEARED pause and fires at the next wave). */
+static bool laser_can_fire(void)
+{
+    return state == ST_BATTLE && wave_active && !cooldown_active && laser_energy >= weapon_power();
+}
+
 static void laser_try_fire(void)
 {
-    if (state != ST_BATTLE || cooldown_active) return;
-    if (laser_energy >= weapon_power()) laser_fire();
+    if (laser_can_fire()) laser_fire();
 }
 
 static void laser_charge(void)
@@ -2059,7 +2080,7 @@ static void laser_charge(void)
     if (laser_energy > LASER_MAX) laser_energy = LASER_MAX;
     uart_printf("[EVT] LASER charged: %d/10 -> %d/10\r\n", before, laser_energy);
     bb_log(BB_CHARGE, before, laser_energy, 0, 0);
-    if (laser_energy >= weapon_power() && !cooldown_active) laser_fire();
+    if (laser_can_fire()) laser_fire();
     else bz_fx(SND(SND_CHARGE));
 }
 
@@ -2088,11 +2109,8 @@ static void weapon_next(void)
 
 static void aim_move(int dx, int dy)
 {
-    aim_x += dx; aim_y += dy;
-    if (aim_x < 0) aim_x = 0;
-    if (aim_x > 7) aim_x = 7;
-    if (aim_y < 0) aim_y = 0;
-    if (aim_y > 7) aim_y = 7;
+    aim_x = clamp07(aim_x + dx);
+    aim_y = clamp07(aim_y + dy);
 }
 
 static void target_lock(void)
@@ -2295,6 +2313,7 @@ static void battle_tick(void)
         bz_fx(SND(SND_VICTORY));
     } else if (map_live && !wave_active && elapsed(wave_pause_t, WAVE_PAUSE_MS)) {
         wave_start(wave_no + 1);
+        laser_try_fire();                                /* energy kept over the pause */
     } else if (map_live && wave_active && elapsed(t_spread, spread_ms)) {
         t_spread = HAL_GetTick();
         map_spread();
@@ -2661,9 +2680,12 @@ static void app_loop(void)
 
     uart_poll_commands();
 
+    /* Normally at most one event per pass. If several piled up, stop at the
+     * first mode change so old presses do not act in the new mode. */
     button_collect(&singles, &doubles);
-    while (singles--) action_single();
-    while (doubles--) action_double();
+    sys_state_t s0 = state;
+    while (singles-- && state == s0) action_single();
+    while (doubles-- && state == s0) action_double();
 
     fiveway_tick();
 

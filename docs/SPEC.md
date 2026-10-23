@@ -196,6 +196,7 @@ BATTLE không gửi telemetry định kỳ, chỉ gửi sự kiện.
   - **RULE** (mặc định, đúng đề): mỗi phát `p = 5`, đủ năng lượng là tự bắn ngay, **không cooldown** *(đề)*.
   - **SEL** (5-way giữa giữ 1 s, đi vòng RULE → 1 → … → 5 → RULE): `p` = 1–5. Sau mỗi phát có **cooldown `p` giây**, riêng `p = 1` không có. Trong lúc cooldown vẫn nạp được. Hết cooldown mà đủ năng lượng thì tự bắn ngay.
 - Tự bắn khi năng lượng ≥ `p`, mỗi lần **một phát**, trừ `p`. Năng lượng thừa để dành, tối đa 10/10.
+- Trong 2 s nghỉ sau AREA CLEARED bản đồ trống nên không bắn (nạp vẫn được). Đợt mới vừa xuất hiện mà đủ năng lượng thì bắn ngay.
 - Mỗi lần vào BATTLE (chuyến xuất kích mới) chế độ bắn về **RULE**. Được cứu thì giữ nguyên chế độ đang dùng.
 
 | `p` | Vùng nổ | Âm thanh |
@@ -323,7 +324,9 @@ Lái, ngắm, khóa mục tiêu và đổi công suất chỉ làm bằng 5-way.
 
 - Siêu vòng lặp không chặn, định thời bằng `HAL_GetTick()`. ISR chỉ ghi cờ hoặc dữ liệu (EXTI13 nút, EXTI11 IMU, USART1 RX/TX).
 - OLED dùng framebuffer: chữ được so với bản cũ, chỉ trang nào đổi mới được gửi, mỗi vòng lặp gửi tối đa một trang (128 byte ≈ 12 ms ở 100 kHz).
-- Module ngoài không có thì bỏ qua, phần *(đề)* vẫn chạy đúng. Ở STANDBY, module chưa thấy được dò lại mỗi 2 s (cắm sau vẫn nhận). 5-way không trả lời 10 lần liên tiếp thì coi như đã rút.
+- Module ngoài không có thì bỏ qua, phần *(đề)* vẫn chạy đúng. Ở STANDBY, module chưa thấy được dò lại mỗi 2 s (cắm sau vẫn nhận). 5-way hoặc OLED không trả lời 10 lần liên tiếp thì coi như đã rút. Màn hình cuối lúc tự hủy chỉ thử gửi một số lần giới hạn, nên thiếu OLED vẫn tự hủy bình thường.
+- Nếu nhiều lần bấm nút dồn lại trong một vòng lặp, chỉ xử lý đến lần đổi mode đầu tiên.
+- Đổi tốc độ I2C chỉ ghi lại thanh ghi `TIMINGR` (tắt `PE`, ghi, bật lại), không khởi tạo lại cả I2C1.
 - Bus I2C bị kẹt (SDA bị giữ thấp sau một lần timeout) thì tự gỡ: 9 xung SCL + STOP rồi khởi tạo lại I2C1, và thử lại giao dịch đó một lần.
 - 5-way chỉ trả lời ở **25 kHz**; OLED và matrix chạy 100 kHz. Firmware đổi tốc độ bus theo từng module.
 - Mã ID của 5-way là một số 32-bit little-endian `(VID << 16) | PID`, tức các byte `02 00 86 28`. Lúc dò: thấy địa chỉ 0x03 trả lời thì đọc ID (thử 2 lần) và so khớp.
@@ -364,3 +367,4 @@ Lái, ngắm, khóa mục tiêu và đổi công suất chỉ làm bằng 5-way.
 | 23/10 | Single press ở STANDBY = **sonar có tiếng vọng** (3 lần mỗi khu vực, không mở ô, ping dư thành năng lượng) kèm báo cáo trinh sát |
 | 23/10 | **Điểm, hệ số nhân, kỷ lục lưu flash**; **nhịp tim** nhanh dần theo mức nguy hiểm ở BATTLE |
 | 23/10 | Rút gọn code: bỏ lệnh debug I2C và phần dò 9 tổ hợp tốc độ/cách đọc (5-way cố định 25 kHz); bỏ cấu hình `ID`, `MOUNT` (cố định #3, chip hướng lên); bỏ lệnh `AIM`, `LOCK`, `POWER`, `HOME` |
+| 23/10 | Rà soát: OLED rút ra được phát hiện, tự hủy không bị treo khi thiếu OLED; không bắn vào bản đồ trống lúc nghỉ giữa đợt; đổi tốc độ I2C nhẹ hơn; vùng tắt ngắt UART khôi phục đúng PRIMASK |
