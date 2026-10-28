@@ -526,7 +526,7 @@ int main(void)
     CHECK(strstr(out, "[EVT] Drone #3: no rescue. Black box saved. Self-destructing. Cutting all communication.") != NULL, "last message");
     CHECK(strstr(out, "[EVT] Mission score:") != NULL, "score settled before self-destruct");
     CHECK(standby_entered && !uart_enabled, "comms cut, MCU Standby");
-    CHECK(big_has(1, "LOST") && big_has(4, "SCORE ") && oled_has(7, "BEST") && !oled_has(5, "BLACK BOX") && oled_dirty == 0, "OLED left on the final screen");
+    CHECK(big_has(0, "LOST") && big_has(3, "SCORE ") && (big_has(6, "BEST") || big_has(6, "HI ")) && blank(2) && blank(5) && oled_dirty == 0, "OLED left on the final screen");
     dump_oled("4_terminated");
     CHECK(erase_count[0] == cfg_erases, "black box save does not touch the config page");
     bb_flash_check();

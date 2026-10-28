@@ -1602,15 +1602,15 @@ static void hud_attacked(void)
 static void hud_terminated(void)
 {
     char t[24];
-    oled_line(0, "");
-    oled_big_c(1, "LOST");
-    oled_line(3, "");
+    oled_big_c(0, "LOST");
+    oled_line(2, "");
     snprintf(t, sizeof(t), "SCORE %lu", (unsigned long)score);
     if (strlen(t) > 10) snprintf(t, sizeof(t), "%lu", (unsigned long)score);
-    oled_big_c(4, t);
-    oled_line(6, "");
+    oled_big_c(3, t);
+    oled_line(5, "");
     snprintf(t, sizeof(t), "BEST %lu", (unsigned long)cfg.hiscore);
-    oled_line_c(7, t);
+    if (strlen(t) > 10) snprintf(t, sizeof(t), "HI %lu", (unsigned long)cfg.hiscore);
+    oled_big_c(6, t);
 }
 
 static void hud_render(void)

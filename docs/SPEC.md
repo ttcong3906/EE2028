@@ -116,12 +116,11 @@ Ký hiệu *(đề)* = yêu cầu bắt buộc của đề bài. **Drone không 
 
 ```
 STANDBY        BATTLE         ATTACKED              TERMINATED
-NESTS 1/3      WAVE 2         !! UNDER ATTACK !!
-               (CLEARED!)       7 s                    LOST
-ECHO 4 NE      ▮▮▮▮▮▮▯▯▯▯
-                                2x PRESS             SCORE 230
-PINGS 2/3      230              TO RESCUE
-                                                     BEST 520 (nhỏ)
+NESTS 1/3      WAVE 2         !! UNDER ATTACK !!    LOST
+               (CLEARED!)       7 s
+ECHO 4 NE      ▮▮▮▮▮▮▯▯▯▯                           SCORE 230
+                                2x PRESS
+PINGS 2/3      230              TO RESCUE            BEST 520
 ```
 
 - Lúc khởi động có trang **SYSTEM CHECK** 2.5 s (chữ nhỏ).
@@ -288,7 +287,7 @@ BATTLE không gửi telemetry định kỳ, chỉ gửi sự kiện.
 **TERMINATED** (hết 10 s không ai cứu):
 1. Chốt điểm (mục 11), ghi hộp đen vào flash (mục 16).
 2. `[EVT] Drone #3: no rescue. Black box saved. Self-destructing. Cutting all communication.`
-3. Matrix dấu X; OLED `LOST` và `SCORE 230` chữ to, kỷ lục chữ nhỏ (OLED tự giữ hình này sau khi MCU tắt); giai điệu kết thúc.
+3. Matrix dấu X; OLED `LOST`, `SCORE 230`, `BEST 520` đều chữ to (OLED tự giữ hình này sau khi MCU tắt); giai điệu kết thúc.
 4. Tắt USART1, LED2, các ngắt, MCU vào Standby mode.
 5. Chỉ nút **RESET** đen (hoặc rút nguồn) mới thoát được.
 
