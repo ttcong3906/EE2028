@@ -51,8 +51,8 @@ extern uint8_t SENSOR_IO_Read(uint8_t Addr, uint8_t Reg);
 #define MS_PID_5WAY             0x0002
 #define MS_RAW_ACTIVE_LEVEL     0      /* raw status bit when pressed       */
 #define FIVEWAY_IDX_UP          0      /* button index order inside module  */
-#define FIVEWAY_IDX_DOWN        1
-#define FIVEWAY_IDX_LEFT        2
+#define FIVEWAY_IDX_LEFT        1
+#define FIVEWAY_IDX_DOWN        2
 #define FIVEWAY_IDX_RIGHT       3
 #define FIVEWAY_IDX_CENTER      4
 
