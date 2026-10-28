@@ -163,6 +163,8 @@ static void fw_tap(int idx) { sim_fw = (uint8_t)(1u << idx); run_ms(60); sim_fw 
 static void fw_hold(int idx, uint32_t ms) { sim_fw = (uint8_t)(1u << idx); run_ms(ms); sim_fw = 0; run_ms(60); }
 static void clear_out(void) { outn = 0; out[0] = 0; }
 static bool oled_has(int line, const char *txt) { return strstr(oled_text_cache[line], txt) != NULL; }
+static bool big_has(int page, const char *txt)  { return oled_text_cache[page][0] == '\x01' && strstr(oled_text_cache[page], txt) != NULL; }
+static bool blank(int line) { for (const char *c = oled_text_cache[line]; *c; c++) if (*c != ' ') return false; return true; }
 static int count(const char *needle) { int c = 0; const char *p = out; while ((p = strstr(p, needle))) { c++; p++; } return c; }
 static const char *last(const char *needle) { const char *p = out, *r = ""; while ((p = strstr(p, needle))) { r = p; p++; } return r; }
 
@@ -210,16 +212,15 @@ int main(void)
 
     printf("== STANDBY scouting + OLED ==\n");
     clear_out(); run_ms(3100);
-    CHECK(oled_has(0, "STANDBY  BEST 0") && oled_has(1, "NESTS 0/3") && oled_has(3, "ECHO -") &&
-          oled_has(5, "PINGS 3/3  AREA 6/64") && oled_has(7, "1x PING   2x BATTLE"), "after 2.5 s: one STANDBY screen, big NESTS + ECHO");
-    CHECK(oled_text_cache[1][0] == '\x01' && oled_text_cache[3][0] == '\x01', "nests and echo in big 2x text");
+    CHECK(big_has(0, "NESTS 0/3") && big_has(3, "ECHO -") && big_has(6, "PINGS 3/3"), "after 2.5 s: STANDBY = NESTS, ECHO, PINGS in big text");
+    CHECK(blank(2) && blank(5), "empty page between the big lines");
     CHECK(strstr(out, "[EVT] Habitat found (T 25.0 C, H 60 %RH)") != NULL && habitat_found, "habitat after 3 s of T 20-32 C and H 40-70 %RH");
     run_ms(200);
     CHECK(memcmp(mx_shown, GL_HOUSE, 8) == 0, "matrix shows the house icon");
     clear_out(); s_hum = 85; run_ms(1000);
     CHECK(!habitat_found && strstr(out, "[WARN] H: 85.00 %RH, exceeds threshold of 80.00 %RH") && count("[TLM]") == 0, "humid: habitat lost + WARN instead of TLM");
     run_ms(150);
-    CHECK(oled_has(6, "WARN: HHI"), "OLED shows the warning");
+    CHECK(big_has(0, "NESTS") && !oled_has(6, "WARN"), "warnings stay on the UART, OLED unchanged");
     s_hum = 60;
     run_ms(2500);
     clear_out(); single();
@@ -236,7 +237,7 @@ int main(void)
 
     printf("== scouting map ==\n");
     scout_new();
-    CHECK(popcount8(scout_nest) == SCOUT_NESTS && scout_found_n == 0 && scout_scanned() == 6, "new area: 3 hidden nests, only the 3x3 around the start scanned");
+    CHECK(popcount8(scout_nest) == SCOUT_NESTS && scout_found_n == 0 && 64 - popcount8(scout_fog) == 6, "new area: 3 hidden nests, only the 3x3 around the start scanned");
     memset(scout_nest, 0, 8); memset(scout_found, 0, 8); memset(scout_fog, 0xFF, 8);
     rset(scout_nest, 3, 4); rset(scout_nest, 6, 1); rset(scout_nest, 0, 0);
     scout_x = 3; scout_y = 7; scout_found_n = 0; scout_scan(false);
@@ -259,7 +260,7 @@ int main(void)
     CHECK((mx_shown[4] & (0x80u >> 4)) && (mx_shown[3] & (0x80u >> 5)) && (mx_shown[2] & (0x80u >> 6)) && (mx_shown[1] & (0x80u >> 7)),
           "matrix: echo ray 4 cells towards NE");
     run_ms(150);
-    CHECK(oled_has(5, "PINGS 2/3") && oled_has(3, "ECHO 4 NE"), "OLED: pings left + big echo direction");
+    CHECK(big_has(6, "PINGS 2/3") && big_has(3, "ECHO 4 NE"), "OLED: pings left + big echo direction");
     dump_oled("1_standby");
     run_ms(1000); type("PING\r"); run_ms(1000); type("PING\r"); run_ms(1000);
     clear_out(); type("PING\r");
@@ -276,7 +277,7 @@ int main(void)
               "matrix: fog lit, scanned dark, drone blinking");
     }
     run_ms(150);
-    CHECK(oled_has(1, "NESTS 2/3") && oled_has(0, "BEST"), "OLED follows the map");
+    CHECK(big_has(0, "NESTS 2/3"), "OLED follows the map");
     clear_out(); type("STATUS\r");
     CHECK(strstr(out, "[STAT] STANDBY, alt +0.0 m, nests 2/3, pings 0/3, score 40, best 0\r\n") && count("[STAT]") == 1, "STATUS in STANDBY: one short line");
     pings_left = 2;
@@ -354,8 +355,8 @@ int main(void)
         memcpy(map_rows, keep, 8);
         CHECK(slow > 1150 && fast == 350, "heartbeat: ~1200 ms nearly empty, 350 ms at 75 %");
     }
-    CHECK(oled_has(0, "WAVE 1     TARGETS 3") && oled_has(3, "0/10  P5 RULE") && oled_text_cache[1][0] == '\x03' &&
-          oled_has(4, "0 x1") && oled_has(7, "1x CHARGE 2x STANDBY"), "OLED battle screen: energy bar, big score");
+    CHECK(big_has(0, "WAVE 1") && oled_text_cache[3][0] == '\x03' && big_has(6, "0") && blank(2) && blank(5),
+          "OLED battle screen: big wave, energy bar, big score");
     memset(map_rows, 0, 8);
     for (int y = 2; y <= 4; y++) for (int x = 2; x <= 4; x++) cell_set(x, y);   /* 3x3 block */
     cell_set(7, 0);                                   /* keep the wave alive */
@@ -367,7 +368,7 @@ int main(void)
     CHECK(!bz_playing(SND_HEART), "shot sound interrupts the heartbeat");
     CHECK(!cooldown_active && bb.cells == 9, "rule mode: no cooldown, 9 zombies down");
     run_ms(150);
-    CHECK(oled_has(6, "HIT! 9 +90 x1") && oled_has(4, "90 x2") && oled_text_cache[4][0] == '\x01', "OLED event line + big score with next multiplier");
+    CHECK(big_has(6, "90") && strstr(oled_text_cache[3], "3/10") == NULL && strstr(oled_text_cache[3], "1/10"), "OLED: score and energy bar follow the shot");
     dump_oled("2_battle");
 
     printf("== weapon power: 5-way centre hold ==\n");
@@ -394,7 +395,6 @@ int main(void)
     clear_out(); single();
     CHECK(strstr(out, "fired") == NULL && strstr(out, "charged: 1/10 -> 4/10"), "during cooldown: charge only");
     run_ms(150);
-    CHECK(oled_has(3, "COOL"), "OLED shows the cooldown");
     clear_out(); run_ms(3100);
     CHECK(strstr(out, "[EVT] Laser ready") && strstr(out, "Laser fired: 5 down"), "cooldown ends -> ready + auto-fire, plus-shaped blast");
     laser_energy = 0;
@@ -435,7 +435,7 @@ int main(void)
     run_ms(20);
     CHECK(!wave_active && strstr(out, "[EVT] Wave 1 cleared, +50") && bb.waves == 1, "AREA CLEARED");
     run_ms(400);
-    CHECK(memcmp(mx_shown, GL_CHECK, 8) == 0 && oled_has(0, "WAVE 1     CLEARED!"), "matrix check mark + OLED during the pause");
+    CHECK(memcmp(mx_shown, GL_CHECK, 8) == 0 && big_has(0, "CLEARED!"), "matrix check mark + OLED during the pause");
     laser_energy = 4; clear_out(); single();
     CHECK(strstr(out, "charged: 4/10 -> 7/10") && !strstr(out, "fired") && laser_energy == 7, "no shot into an empty map during the pause");
     clear_out(); run_ms(2000);
@@ -459,7 +459,7 @@ int main(void)
     CHECK(bz_playing(SND_SOS), "SOS beacon playing");
     CHECK(strstr(out, "[ATTACK] Drone #3 Was Attacked! Rescue in 10 s") != NULL, "attack message with drone id");
     run_ms(150);
-    CHECK(oled_has(0, "!! UNDER ATTACK !!") && oled_text_cache[2][0] == '\x01' && oled_has(2, "10 s") && oled_has(6, "2x PRESS = RESCUE"), "OLED big rescue countdown");
+    CHECK(oled_has(0, "!! UNDER ATTACK !!") && big_has(1, "10 s") && big_has(4, "2x PRESS") && big_has(6, "TO RESCUE"), "OLED: big countdown and big rescue hint");
     dump_oled("3_attacked");
     t0 = led_toggles; run_ms(2000);
     CHECK(led_toggles - t0 == 8, "LED 2 Hz");
@@ -526,7 +526,7 @@ int main(void)
     CHECK(strstr(out, "[EVT] Drone #3: no rescue. Black box saved. Self-destructing. Cutting all communication.") != NULL, "last message");
     CHECK(strstr(out, "[EVT] Mission score:") != NULL, "score settled before self-destruct");
     CHECK(standby_entered && !uart_enabled, "comms cut, MCU Standby");
-    CHECK(oled_has(1, "LOST") && oled_has(4, "SCORE ") && oled_has(5, "BLACK BOX SAVED") && oled_dirty == 0, "OLED left on the final screen");
+    CHECK(big_has(1, "LOST") && big_has(4, "SCORE ") && oled_has(7, "BEST") && !oled_has(5, "BLACK BOX") && oled_dirty == 0, "OLED left on the final screen");
     dump_oled("4_terminated");
     CHECK(erase_count[0] == cfg_erases, "black box save does not touch the config page");
     bb_flash_check();

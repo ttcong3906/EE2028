@@ -100,7 +100,7 @@ Ký hiệu *(đề)* = yêu cầu bắt buộc của đề bài. **Drone không 
 
 | Thành phần | Làm gì | Matrix / OLED / buzzer | UART |
 |---|---|---|---|
-| 6 cảm biến *(đề)* | Đọc mỗi 1 s, so ngưỡng (mục 13) | OLED chỉ báo cảnh báo (`WARN: HHI`) | `[TLM] T: … M: …` **đúng 6 trường**, hoặc `[WARN] …` *(đề)* |
+| 6 cảm biến *(đề)* | Đọc mỗi 1 s, so ngưỡng (mục 13) | | `[TLM] T: … M: …` **đúng 6 trường**, hoặc `[WARN] …` *(đề)* |
 | LED2 *(đề)* | Sáng liên tục | | |
 | **Bản đồ trinh sát** | Lái drone qua sương mù, quét 3x3 (mục 7) | Matrix | `[EVT] Nest found (2/3)` |
 | **Sonar** (PB single) | Ping, nghe tiếng vọng (mục 7) | Vòng sóng trên matrix; ping + tiếng vọng; OLED `ECHO 3 NE` (chữ to) | `[EVT] Ping 1/3: echo 3 cells NE` |
@@ -112,20 +112,18 @@ Ký hiệu *(đề)* = yêu cầu bắt buộc của đề bài. **Drone không 
 - Lật board ở STANDBY không có tác dụng. Ở STANDBY không có nhạc nền.
 - Khoảng tìm nơi ở nới rộng hơn chuẩn tiện nghi ASHRAE (khoảng 30–60 %RH) để demo được trong phòng lab có máy lạnh ở Singapore.
 
-**OLED** (128x64, chữ nhỏ 21 ký tự × 8 dòng, chữ to 10 ký tự × 2 dòng): mỗi mode **một màn hình**, không chuyển trang. Chỉ hiện những gì người chơi cần khi nhìn vào board; cảm biến đã có trên TeraTerm, bản đồ và tâm ngắm đã có trên matrix, hộp đen xem bằng lệnh `BLACKBOX`.
+**OLED** (0.96", 128x64): chữ nhỏ 6x8 quá bé để đọc khi cầm board, nên mỗi mode chỉ có **một màn hình gồm 2–3 mục chữ to** (cao 16 px, tối đa 10 ký tự), giữa các mục để trống một dòng. Mọi thông tin khác ở TeraTerm (cảm biến, cảnh báo, sự kiện, `STATUS`, `BLACKBOX`) hoặc trên matrix (bản đồ, tâm ngắm).
 
 ```
-STANDBY                  BATTLE                   ATTACKED                 TERMINATED
-STANDBY  BEST 520        WAVE 2     TARGETS 11    !! UNDER ATTACK !!
-NESTS 1/3   (to)         ▮▮▮▮▮▮▯▯▯▯   (to)                                    LOST      (to)
-ECHO 4 NE   (to)         6/10  P5 RULE              7 s       (to)
-PINGS 2/3  AREA 37/64    230 x3       (to)                                 SCORE 230  BEST 520
-WARN: HHI / sự kiện      HIT! 5 +150 x2           2x PRESS = RESCUE        BLACK BOX SAVED
-1x PING   2x BATTLE      1x CHARGE 2x STANDBY                              PRESS RESET
+STANDBY        BATTLE         ATTACKED              TERMINATED
+NESTS 1/3      WAVE 2         !! UNDER ATTACK !!
+               (CLEARED!)       7 s                    LOST
+ECHO 4 NE      ▮▮▮▮▮▮▯▯▯▯
+                                2x PRESS             SCORE 230
+PINGS 2/3      230              TO RESCUE
+                                                     BEST 520 (nhỏ)
 ```
 
-- Dòng 6 (STANDBY, BATTLE) theo thứ tự ưu tiên: cảnh báo ngưỡng → sự kiện 2 s (`NEST FOUND 2/3`, `HIT!`, `MISSED!`, `AREA CLEARED!`) → trạng thái (`HABITAT FOUND`, `AREA OVERRUN!`).
-- Ở BATTLE, `x3` là hệ số nhân của phát trúng kế tiếp.
 - Lúc khởi động có trang **SYSTEM CHECK** 2.5 s (chữ nhỏ).
 
 ---
@@ -167,13 +165,13 @@ WARN: HHI / sự kiện      HIT! 5 +150 x2           2x PRESS = RESCUE        B
 | LED2 *(đề)* | Nháy 1 Hz | | |
 | PB single *(đề)* | Nạp +3/10, đủ năng lượng thì tự bắn (mục 10) | Bíp nạp; tia + vùng nổ, piuuu / pew / BOOM | `[EVT] Laser charged: 3/10 -> 6/10` |
 | 5-way 4 hướng | Dời tâm ngắm 1 ô, giữ thì chạy liên tục | Tâm ngắm nháy 4 Hz | |
-| 5-way giữa ngắn | Nhảy tới ô nhiễm gần nhất | | (chỉ OLED `TARGET LOCKED`) |
+| 5-way giữa ngắn | Nhảy tới ô nhiễm gần nhất | | |
 | 5-way giữa **giữ 1 s** | Đổi công suất: RULE 5/10 → 1 → 2 → 3 → 4 → 5 → RULE | | `[EVT] Weapon: power 3/10` |
 | **Nhạc nhịp tim** | Mục 12 | Buzzer | |
 | Accel *(đề)* | Phát hiện lật theo kiểu lắp (mục 14) | | → ATTACKED |
 | PB double *(đề)* | Chốt điểm, về STANDBY, **bản đồ bị xóa**, khu vực trinh sát mới | | `Entering STANDBY MODE` |
 
-**OLED ở BATTLE:** xem màn hình ở mục 6. Thanh năng lượng 10 ô, công suất hoặc cooldown còn lại, **điểm và hệ số nhân chữ to**.
+**OLED ở BATTLE:** xem mục 6: đợt, thanh năng lượng 10 ô, điểm. Công suất và cooldown chỉ báo qua UART và tiếng.
 
 BATTLE không gửi telemetry định kỳ, chỉ gửi sự kiện.
 
@@ -225,7 +223,7 @@ BATTLE không gửi telemetry định kỳ, chỉ gửi sự kiện.
 
 - **Hệ số nhân (combo):** phát bắn trúng liên tiếp tăng hệ số: phát trúng đầu ×1, phát thứ hai liên tiếp ×2, thứ ba ×3, từ thứ tư trở đi ×4. Bắn trượt thì về ×1.
 - **Một ván** = một khu vực trinh sát + chuyến BATTLE ngay sau nó. Điểm về 0 khi bắt đầu khu vực mới.
-- **Chốt điểm** khi về STANDBY hoặc khi tự hủy: `[EVT] Mission score: 1230 (best 870)`. Phá kỷ lục thì `[EVT] NEW HIGH SCORE: 1230`, lưu vào flash, OLED `NEW HIGH SCORE!` và đoạn nhạc kỷ lục (khi tự hủy thì chỉ lưu và báo, không phát nhạc).
+- **Chốt điểm** khi về STANDBY hoặc khi tự hủy: `[EVT] Mission score: 1230 (best 870)`. Phá kỷ lục thì `[EVT] NEW HIGH SCORE: 1230`, lưu vào flash và đoạn nhạc kỷ lục (khi tự hủy thì chỉ lưu và báo, không phát nhạc).
 - Lệnh `HISCORE RESET` (STANDBY) xóa kỷ lục.
 
 ---
@@ -264,7 +262,7 @@ BATTLE không gửi telemetry định kỳ, chỉ gửi sự kiện.
 | M | Độ lớn từ trường | `uT` | 10.0 | 100.0 | Từ trường Trái Đất 25–65 µT; > 100 µT là có nam châm hoặc vật nhiễm từ ở gần |
 
 - Đổi đơn vị: A `mg × 9.80665 / 1000`; G `mdps / 1000`; M `mGauss / 10 = µT`.
-- **Độ cao** (OLED, báo cáo): mốc 0 m là `P0` lúc khởi động, `h = 44330 × (1 − (P/P0)^0.1903)` m. Lọc trung bình trượt rồi làm tròn theo bậc 0.1 hPa (≈ 0.85 m) tính từ P0, có trễ 0.06 hPa để không nhảy. Dòng `[TLM]` vẫn gửi áp suất thật.
+- **Độ cao** (lệnh `STATUS`): mốc 0 m là `P0` lúc khởi động, `h = 44330 × (1 − (P/P0)^0.1903)` m. Lọc trung bình trượt rồi làm tròn theo bậc 0.1 hPa (≈ 0.85 m) tính từ P0, có trễ 0.06 hPa để không nhảy. Dòng `[TLM]` vẫn gửi áp suất thật.
 
 ---
 
@@ -283,14 +281,14 @@ BATTLE không gửi telemetry định kỳ, chỉ gửi sự kiện.
 **ATTACKED:**
 - LED2 nháy 2 Hz *(đề)*. Khi vào: `[EVT] Drone #3 flipped! The Last of EE2028`. Mỗi 1 s: `[ATTACK] Drone #3 Was Attacked! Rescue in 7 s` *(đề)*.
 - Buzzer phát **Morse SOS** liên tục, kêu cả khi im lặng. Matrix hiện chữ S-O-S theo nhịp.
-- OLED: `!! UNDER ATTACK !!`, **số giây còn lại cỡ chữ lớn**, `2x PRESS = RESCUE`.
+- OLED: `!! UNDER ATTACK !!`, **số giây còn lại** và `2x PRESS / TO RESCUE` chữ to.
 - **Được cứu** khi double press *(đề)* hoặc lệnh `RESCUE`. Báo `[EVT] Rescued! Back to BATTLE`, về BATTLE. Matrix mặt cười 1 s, ba nốt đi lên.
 - Single press và 5-way bị bỏ qua.
 
 **TERMINATED** (hết 10 s không ai cứu):
 1. Chốt điểm (mục 11), ghi hộp đen vào flash (mục 16).
 2. `[EVT] Drone #3: no rescue. Black box saved. Self-destructing. Cutting all communication.`
-3. Matrix dấu X; OLED `LOST` (chữ to), điểm và kỷ lục, `BLACK BOX SAVED` (OLED tự giữ hình này sau khi MCU tắt); giai điệu kết thúc.
+3. Matrix dấu X; OLED `LOST` và `SCORE 230` chữ to, kỷ lục chữ nhỏ (OLED tự giữ hình này sau khi MCU tắt); giai điệu kết thúc.
 4. Tắt USART1, LED2, các ngắt, MCU vào Standby mode.
 5. Chỉ nút **RESET** đen (hoặc rút nguồn) mới thoát được.
 
@@ -352,7 +350,7 @@ Lái, ngắm, khóa mục tiêu và đổi công suất chỉ làm bằng 5-way.
 | LED BATTLE / ATTACKED | đảo mỗi 500 / 250 ms |
 | Giữ lật để xác nhận / cửa sổ cứu hộ | 300 ms / 10 s |
 | 5-way: đọc / giữ | 30 ms / 1 s |
-| OLED: vẽ lại / dòng sự kiện | 100 ms / 2 s |
+| OLED: vẽ lại | 100 ms |
 | Sonar: vòng sóng / tiếng vọng / vạch hướng | 4 × 90 ms / 150 + 100·d ms / 0.7 s |
 | Nhịp tim | 1200 ms → 350 ms theo số ô nhiễm |
 | Lây nhiễm / nghỉ giữa hai đợt | 3 s → 1 s / 2 s |

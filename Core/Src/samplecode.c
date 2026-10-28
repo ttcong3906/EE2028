@@ -93,7 +93,6 @@ extern uint8_t SENSOR_IO_Read(uint8_t Addr, uint8_t Reg);
 #define BEAM_FRAME_MS           50U
 #define BLAST_FLASH_MS          150U
 #define BOOT_CHECK_MS           2500U  /* OLED system-check page at power-on    */
-#define EVENT_TEXT_MS           2000U  /* OLED event line                      */
 #define OLED_REFRESH_MS         100U
 
 /* --- Physics / thresholds --- */
@@ -707,7 +706,7 @@ static void oled_linef(uint8_t line, const char *fmt, ...)
     oled_line(line, buf);
 }
 
-/* 2x scaled text over two pages (12 px per character, 14 px tall). */
+/* 2x scaled text over two pages (12 px per character, 14 px tall, 1 px margin above and below). */
 static void oled_big(uint8_t page, uint8_t x, const char *text)
 {
 #if ENABLE_OLED
@@ -724,7 +723,7 @@ static void oled_big(uint8_t page, uint8_t x, const char *text)
         const uint8_t *g = font5x7[ch - 32];
         for (int col = 0; col < 5; col++) {
             uint16_t v = 0;
-            for (int b = 0; b < 7; b++) if (g[col] & (1U << b)) v |= (uint16_t)(3U << (2 * b));
+            for (int b = 0; b < 7; b++) if (g[col] & (1U << b)) v |= (uint16_t)(3U << (2 * b + 1));   /* 1 px top margin */
             for (int k = 0; k < 2; k++) {
                 oled_fb[page][x + col * 2 + k]       = (uint8_t)(v & 0xFFU);
                 oled_fb[page + 1U][x + col * 2 + k]  = (uint8_t)(v >> 8);
@@ -1290,7 +1289,6 @@ static inline bool inside(int x, int y)     { return x >= 0 && x < 8 && y >= 0 &
 static inline int  clamp07(int v)           { return v < 0 ? 0 : (v > 7 ? 7 : v); }
 static int map_count(void)                  { return popcount8(map_rows); }
 
-static void event_text(const char *t, uint8_t prio);   /* section 13 */
 
 /* --- Scouting (STANDBY): the same 8x8 area under fog, with hidden nests --- */
 static uint8_t  scout_fog[8];            /* bit set = not scanned yet */
@@ -1389,11 +1387,6 @@ static void blast_mask(int p, int cx, int cy, uint8_t out[8])
     }
 }
 
-static const char *power_name(int p)
-{
-    return p <= 1 ? "PIU" : (p <= 3 ? "PEW" : "BOOM");
-}
-
 static void aim_nearest(void)
 {
     int best = 99, bx = aim_x, by = aim_y;
@@ -1418,9 +1411,6 @@ static void scout_scan(bool announce)
             if (announce) {
                 score += 20;
                 uart_printf("[EVT] Nest found (%d/%d)\r\n", scout_found_n, SCOUT_NESTS);
-                char t[24];
-                snprintf(t, sizeof(t), "NEST FOUND %d/%d", scout_found_n, SCOUT_NESTS);
-                event_text(t, 2);
                 if (scout_found_n == SCOUT_NESTS) {
                     uint32_t bonus = 30U + 20U * (uint32_t)pings_left;
                     score += bonus;
@@ -1452,11 +1442,6 @@ static void scout_new(void)
     scout_scan(false);
 }
 
-static int scout_scanned(void)
-{
-    return 64 - popcount8(scout_fog);
-}
-
 static void scout_move(int dx, int dy)
 {
     if (state != ST_STANDBY || !scout_ready) return;
@@ -1486,7 +1471,6 @@ static void sonar_ping(void)
     if (state != ST_STANDBY || !scout_ready) return;
     if (pings_left <= 0) {
         uart_write("[EVT] No pings left\r\n");
-        event_text("NO PINGS LEFT", 1);
         bz_fx(SND(SND_NOPING));
         return;
     }
@@ -1544,24 +1528,7 @@ static int rescue_secs_left(void)
 }
 
 /* --- OLED content ------------------------------------------------------- */
-static char     ev_text[24] = "";
-static uint32_t ev_until = 0;
-static uint8_t  ev_prio = 0;
-#define EV_NORMAL 1
-#define EV_EFFECT 2
 static uint32_t t_oled = 0;
-
-static bool event_active(void) { return ev_text[0] && (int32_t)(ev_until - HAL_GetTick()) > 0; }
-
-/* A message is never replaced by a less important one while still shown. */
-static void event_text(const char *t, uint8_t prio)
-{
-    if (event_active() && prio < ev_prio) return;
-    strncpy(ev_text, t, sizeof(ev_text) - 1);
-    ev_text[sizeof(ev_text) - 1] = '\0';
-    ev_prio = prio;
-    ev_until = HAL_GetTick() + EVENT_TEXT_MS;
-}
 
 static void hud_boot_check(void)
 {
@@ -1575,82 +1542,75 @@ static void hud_boot_check(void)
     oled_linef(7, "DRONE #%d  STARTING", DRONE_ID);
 }
 
-/* The OLED is small (128x64), so each mode has ONE screen: the one or two
- * numbers that matter in big 2x text, a few small lines, nothing that is
- * already on the LED matrix or in the UART telemetry. */
+/* The OLED is tiny (0.96", 128x64): small 6x8 text is unreadable at arm's
+ * length, so each mode shows only 2-3 items in 2x text (10 chars per line),
+ * with an empty page between them. Everything else is on the UART. */
 
-/* Line 6: threshold warning > short event > persistent status. */
-static void hud_status_line(const char *idle)
+/* 2x text centred horizontally (12 px per char, the last one 10 px). */
+static void oled_big_c(uint8_t page, const char *text)
 {
-    if (warn_mask) {
-        char buf[40] = "WARN:";
-        for (int i = 0; i < S_COUNT; i++) {
-            if (warn_mask & (1UL << (2 * i)))     { strcat(buf, " "); strcat(buf, th[i].tag); strcat(buf, "LO"); }
-            if (warn_mask & (1UL << (2 * i + 1))) { strcat(buf, " "); strcat(buf, th[i].tag); strcat(buf, "HI"); }
-        }
-        oled_line(6, buf);
-    } else if (event_active()) oled_line(6, ev_text);
-    else                       oled_line(6, idle);
+    int w = 12 * (int)strlen(text) - 2;
+    oled_big(page, (uint8_t)(w < 128 ? (128 - w) / 2 : 0), text);
+}
+
+static void oled_line_c(uint8_t line, const char *text)
+{
+    char buf[OLED_COLS + 1];
+    int n = (int)strlen(text), pad = n < OLED_COLS ? (OLED_COLS - n) / 2 : 0;
+    snprintf(buf, sizeof(buf), "%*s%s", pad, "", text);
+    oled_line(line, buf);
 }
 
 static void hud_standby(void)
 {
     if (!elapsed(boot_tick, BOOT_CHECK_MS)) { hud_boot_check(); return; }
-    char big[24];                                     /* only ~10 chars fit in 2x */
-    oled_linef(0, "STANDBY  BEST %lu", (unsigned long)cfg.hiscore);
-    snprintf(big, sizeof(big), "NESTS %d/%d", scout_found_n, SCOUT_NESTS);
-    oled_big(1, 4, big);
-    snprintf(big, sizeof(big), "ECHO %s", echo_short);
-    oled_big(3, 4, big);
-    oled_linef(5, "PINGS %d/%d  AREA %d/64", pings_left, SONAR_PINGS, scout_scanned());
-    hud_status_line(habitat_found ? "HABITAT FOUND" : "");
-    oled_line(7, "1x PING   2x BATTLE");
+    char t[24];
+    snprintf(t, sizeof(t), "NESTS %d/%d", scout_found_n, SCOUT_NESTS);
+    oled_big_c(0, t);
+    oled_line(2, "");
+    snprintf(t, sizeof(t), "ECHO %s", echo_short);
+    oled_big_c(3, t);
+    oled_line(5, "");
+    snprintf(t, sizeof(t), "PINGS %d/%d", pings_left, SONAR_PINGS);
+    oled_big_c(6, t);
 }
 
 static void hud_battle(void)
 {
-    int p = weapon_power();
-    int n = map_count();
-    if (wave_active) oled_linef(0, "WAVE %d     TARGETS %d", wave_no, n);
-    else             oled_linef(0, "WAVE %d     CLEARED!", wave_no);
-    oled_bar(1, laser_energy, 10);
-    if (cooldown_active) {
-        int32_t sleft = (int32_t)(cooldown_until - HAL_GetTick());
-        uint32_t left = sleft > 0 ? (uint32_t)sleft : 0U;
-        oled_linef(3, "%d/10  COOL %lu.%lus", laser_energy, (unsigned long)(left / 1000U), (unsigned long)((left % 1000U) / 100U));
-    } else {
-        oled_linef(3, "%d/10  P%d %s", laser_energy, p, weapon_sel ? power_name(p) : "RULE");
-    }
-    char big[24];                                     /* only ~10 chars fit in 2x */
-    int mult = streak + 1 > 4 ? 4 : streak + 1;            /* multiplier of the next hit */
-    snprintf(big, sizeof(big), "%lu x%d", (unsigned long)score, mult);
-    oled_big(4, 4, big);
-    hud_status_line(n >= MAP_OVERRUN_CELLS ? "AREA OVERRUN!" : "");
-    oled_line(7, "1x CHARGE 2x STANDBY");
+    char t[24];
+    if (wave_active) snprintf(t, sizeof(t), "WAVE %d", wave_no);
+    else             snprintf(t, sizeof(t), "CLEARED!");
+    oled_big_c(0, t);
+    oled_line(2, "");
+    oled_bar(3, laser_energy, 10);
+    oled_line(5, "");
+    snprintf(t, sizeof(t), "%lu", (unsigned long)score);
+    oled_big_c(6, t);
 }
 
 static void hud_attacked(void)
 {
-    char big[8];
-    snprintf(big, sizeof(big), "%d s", rescue_secs_left());
-    oled_line(0, "!! UNDER ATTACK !!");
-    oled_line(1, "");
-    oled_big(2, 40, big);
-    oled_line(4, "");
-    oled_line(5, "");
-    oled_line(6, "2x PRESS = RESCUE");
-    oled_line(7, "");
+    char t[8];
+    snprintf(t, sizeof(t), "%d s", rescue_secs_left());
+    oled_line_c(0, "!! UNDER ATTACK !!");
+    oled_big_c(1, t);
+    oled_line(3, "");
+    oled_big_c(4, "2x PRESS");
+    oled_big_c(6, "TO RESCUE");
 }
 
 static void hud_terminated(void)
 {
+    char t[24];
     oled_line(0, "");
-    oled_big(1, 40, "LOST");
+    oled_big_c(1, "LOST");
     oled_line(3, "");
-    oled_linef(4, "SCORE %lu  BEST %lu", (unsigned long)score, (unsigned long)cfg.hiscore);
-    oled_line(5, "BLACK BOX SAVED");
-    oled_line(6, "PRESS RESET");
-    oled_line(7, "");
+    snprintf(t, sizeof(t), "SCORE %lu", (unsigned long)score);
+    if (strlen(t) > 10) snprintf(t, sizeof(t), "%lu", (unsigned long)score);
+    oled_big_c(4, t);
+    oled_line(6, "");
+    snprintf(t, sizeof(t), "BEST %lu", (unsigned long)cfg.hiscore);
+    oled_line_c(7, t);
 }
 
 static void hud_render(void)
@@ -1786,7 +1746,6 @@ static void score_finalize(bool play)
     uart_printf("[EVT] NEW HIGH SCORE: %lu\r\n", (unsigned long)score);
     cfg.hiscore = score;
     cfg_save();
-    event_text("NEW HIGH SCORE!", EV_EFFECT);
     if (play) bz_fx(SND(SND_HISCORE));
 }
 
@@ -1854,7 +1813,6 @@ static void enter_attacked(float az)
 static void rescue(void)
 {
     uart_write("[EVT] Rescued! Back to BATTLE\r\n");
-    event_text("RESCUED!", EV_EFFECT);
     bb_log(BB_RESCUED, rescue_secs_left(), 0, 0, 0);
     flip_armed = false;
     smile = true;
@@ -1937,13 +1895,9 @@ static void laser_fire(void)
         streak++;
         uart_printf("[EVT] Laser fired: %d down, +%lu x%d. Energy %d/10 -> %d/10\r\n",
                     cleared, (unsigned long)pts, mult, before, laser_energy);
-        char t[40];
-        snprintf(t, sizeof(t), "HIT! %d +%lu x%d", cleared, (unsigned long)pts, mult);
-        event_text(t, EV_EFFECT);
     } else {
         streak = 0;
         uart_printf("[EVT] Laser fired: missed. Energy %d/10 -> %d/10\r\n", before, laser_energy);
-        event_text("MISSED!", EV_EFFECT);
     }
     bb_log(BB_FIRE, p, aim_x, aim_y, cleared);
 
@@ -1985,15 +1939,8 @@ static void weapon_next(void)
     else                   weapon_sel = false;
     bool sel = weapon_sel;
     int  p   = weapon_p;
-    char t[24];
-    if (sel) {
-        uart_printf("[EVT] Weapon: power %d/10\r\n", p);
-        snprintf(t, sizeof(t), "POWER %d/10 %s", p, power_name(p));
-    } else {
-        uart_write("[EVT] Weapon: rule mode 5/10\r\n");
-        snprintf(t, sizeof(t), "RULE MODE 5/10");
-    }
-    event_text(t, EV_NORMAL);
+    if (sel) uart_printf("[EVT] Weapon: power %d/10\r\n", p);
+    else     uart_write("[EVT] Weapon: rule mode 5/10\r\n");
     if (!sel) cooldown_active = false;
     bb_log(BB_WEAPON, sel, weapon_power(), 0, 0);
     bz_fx(SND(SND_REPORT));
@@ -2009,7 +1956,6 @@ static void aim_move(int dx, int dy)
 static void target_lock(void)
 {
     aim_nearest();
-    event_text("TARGET LOCKED", EV_NORMAL);
 }
 
 /* --- Altitude zero here (5-way centre hold in STANDBY) --- */
@@ -2017,7 +1963,6 @@ static void altitude_rezero(void)
 {
     altitude_zero(BSP_PSENSOR_ReadPressure());
     uart_write("[EVT] Altitude zero reset\r\n");
-    event_text("ALTITUDE ZERO SET", EV_NORMAL);
     bz_fx(SND(SND_MODE));
 }
 
@@ -2179,7 +2124,6 @@ static void battle_tick(void)
         bb_log(BB_WAVE_CLEAR, wave_no, bb.cells, 0, 0);
         score += 50U * (uint32_t)wave_no;
         uart_printf("[EVT] Wave %d cleared, +%d\r\n", wave_no, 50 * wave_no);
-        event_text("AREA CLEARED!", EV_EFFECT);
         bz_fx(SND(SND_VICTORY));
     } else if (map_live && !wave_active && elapsed(wave_pause_t, WAVE_PAUSE_MS)) {
         wave_start(wave_no + 1);
