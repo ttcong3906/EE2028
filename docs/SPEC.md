@@ -9,9 +9,9 @@ Firmware nằm trong **một file `Core/Src/main.c`**, chạy trên **một boar
 |---|---|
 | Board B-L4S5I-IOT01A | Toàn bộ yêu cầu của đề |
 | **LED matrix** | **Bản đồ**: sương mù trinh sát ở STANDBY, bản đồ bắn zombie ở BATTLE, chữ SOS khi bị tấn công |
-| **OLED** | **Chữ và số**: cảm biến, kết quả sonar, năng lượng laser, điểm, đếm ngược cứu hộ, hộp đen |
+| **OLED** | **Vài con số quan trọng, chữ to**: số ổ đã tìm, hướng tiếng vọng, năng lượng laser, điểm, đếm ngược cứu hộ |
 | **Buzzer** | **Âm thanh và nhạc**: tiếng vọng sonar, tiếng bắn, nhịp tim nhanh dần theo mức nguy hiểm, nhạc chiến thắng / kỷ lục / kết thúc, SOS |
-| **5-way switch** | **Điều khiển**: lái drone trinh sát, dời tâm ngắm, chuyển trang OLED, đổi công suất |
+| **5-way switch** | **Điều khiển**: lái drone trinh sát, ping sonar, dời tâm ngắm, khóa mục tiêu, đổi công suất |
 
 **Câu chuyện chung:** drone đi qua đúng vòng đời mà đề cho:
 **trinh sát** ở STANDBY (6 cảm biến, lái drone qua vùng sương mù, dùng sonar dò ổ zombie, tìm nơi ở cho người) → **chiến đấu** ở BATTLE (ổ đã tìm thấy hiện ra trên bản đồ, ngắm bằng 5-way, bắn theo đợt, ghi điểm) → **bị hạ** ở The Last of EE2028 (SOS, chờ cứu) → **được cứu** hoặc **tự hủy** (cắt liên lạc, hộp đen được giữ lại để điều tra).
@@ -100,28 +100,33 @@ Ký hiệu *(đề)* = yêu cầu bắt buộc của đề bài. **Drone không 
 
 | Thành phần | Làm gì | Matrix / OLED / buzzer | UART |
 |---|---|---|---|
-| 6 cảm biến *(đề)* | Đọc mỗi 1 s, so ngưỡng (mục 13) | OLED trang 1 | `[TLM] T: … M: …` **đúng 6 trường**, hoặc `[WARN] …` *(đề)* |
+| 6 cảm biến *(đề)* | Đọc mỗi 1 s, so ngưỡng (mục 13) | OLED chỉ báo cảnh báo (`WARN: HHI`) | `[TLM] T: … M: …` **đúng 6 trường**, hoặc `[WARN] …` *(đề)* |
 | LED2 *(đề)* | Sáng liên tục | | |
 | **Bản đồ trinh sát** | Lái drone qua sương mù, quét 3x3 (mục 7) | Matrix | `[EVT] Scouting: nest found at (5,2) (2/3)` |
-| **Sonar** (PB single) | Ping, nghe tiếng vọng (mục 7) | Vòng sóng trên matrix; ping + tiếng vọng; OLED `ECHO: 3 CELLS NE` | `[EVT] Sonar ping 1/3: echo from 3 cells NE` + `[REPORT] …` |
+| **Sonar** (PB single) | Ping, nghe tiếng vọng (mục 7) | Vòng sóng trên matrix; ping + tiếng vọng; OLED `ECHO 3 NE` (chữ to) | `[EVT] Sonar ping 1/3: echo from 3 cells NE` + `[REPORT] …` |
 | **Tìm nơi ở** | Nhiệt độ 20–32 °C **và** độ ẩm 40–70 %RH liên tục 3 s (đề: humidity "used to find new human habitats") | Matrix: ngôi nhà 2 s; chuông | `[EVT] Possible human habitat found: T 26.1 C, H 58 %RH` / `[EVT] Habitat conditions lost` |
 | 5-way 4 hướng | Lái drone trinh sát 1 ô (giữ thì đi liên tục) | | |
-| 5-way giữa **nhấn ngắn** | Sang trang OLED kế tiếp (1 → 2 → 3 → 4 → 1) | | |
+| 5-way giữa **nhấn ngắn** | Ping sonar, giống single press | | |
 | 5-way giữa **giữ 1 s** | Đặt lại mốc độ cao 0 m tại chỗ  | Hai tiếng bíp | `[EVT] Altitude zero reset at 1008.40 hPa` |
 
 - Lật board ở STANDBY không có tác dụng. Ở STANDBY không có nhạc nền.
 - Khoảng tìm nơi ở nới rộng hơn chuẩn tiện nghi ASHRAE (khoảng 30–60 %RH) để demo được trong phòng lab có máy lạnh ở Singapore.
 
-**Các trang OLED ở STANDBY** (21 ký tự × 8 dòng):
+**OLED** (128x64, chữ nhỏ 21 ký tự × 8 dòng, chữ to 10 ký tự × 2 dòng): mỗi mode **một màn hình**, không chuyển trang. Chỉ hiện những gì người chơi cần khi nhìn vào board; cảm biến đã có trên TeraTerm, bản đồ và tâm ngắm đã có trên matrix, hộp đen xem bằng lệnh `BLACKBOX`.
 
-| Trang | Nội dung |
-|---|---|
-| 1 Sensors | T, H, P, A, G, M kèm đơn vị, độ cao. Dòng cuối: cảnh báo đang có (`WARN: HHI MHI`) hoặc `STATUS: ALL NORMAL` |
-| 2 Scouting | Số ổ đã tìm x/3, số ping còn lại x/3, số ô đã quét x/64, vị trí drone, tiếng vọng gần nhất, nơi ở |
-| 3 Mission | Điểm hiện tại, kỷ lục, thời gian bay, zombie đã hạ, số phát bắn, số lần tìm được nơi ở |
-| 4 Black box | Tổng kết chuyến gần nhất (hoặc của drone đã tự hủy), lật từng sự kiện bằng 5-way **trái/phải** (trên trang này trái/phải không lái drone) |
+```
+STANDBY                  BATTLE                   ATTACKED                 TERMINATED
+STANDBY  BEST 520        WAVE 2     TARGETS 11    !! UNDER ATTACK !!
+NESTS 1/3   (to)         ▮▮▮▮▮▮▯▯▯▯   (to)                                    LOST      (to)
+ECHO 4 NE   (to)         6/10  P5 RULE              7 s       (to)
+PINGS 2/3  AREA 37/64    230 x3       (to)                                 SCORE 230  BEST 520
+WARN: HHI / sự kiện      HIT! 5 +150 x2           2x PRESS = RESCUE        BLACK BOX SAVED
+1x PING   2x BATTLE      1x CHARGE 2x STANDBY                              PRESS RESET
+```
 
-Dòng cuối mỗi trang hiện sự kiện vừa xảy ra trong 2 s (`NEST FOUND 2/3`, `ECHO: 3 CELLS NE`, …).
+- Dòng 6 (STANDBY, BATTLE) theo thứ tự ưu tiên: cảnh báo ngưỡng → sự kiện 2 s (`NEST FOUND 2/3`, `HIT!`, `MISSED!`, `AREA CLEARED!`) → trạng thái (`HABITAT FOUND`, `AREA OVERRUN!`).
+- Ở BATTLE, `x3` là hệ số nhân của phát trúng kế tiếp.
+- Lúc khởi động có trang **SYSTEM CHECK** 2.5 s (chữ nhỏ).
 
 ---
 
@@ -169,7 +174,7 @@ Dòng cuối mỗi trang hiện sự kiện vừa xảy ra trong 2 s (`NEST FOUN
 | Accel *(đề)* | Phát hiện lật theo kiểu lắp (mục 14) | | → ATTACKED |
 | PB double *(đề)* | Chốt điểm, về STANDBY, **bản đồ bị xóa**, khu vực trinh sát mới | | `Entering STANDBY MODE` |
 
-**OLED ở BATTLE:** dòng 0 đợt và số mục tiêu (`WAVE 2   TARGETS 11` / `CLEARED!`), dòng 1–2 thanh năng lượng 10 ô cỡ lớn, dòng 3 năng lượng + công suất hoặc cooldown còn lại, dòng 4 tâm ngắm (`TARGET!` nếu đang nhắm trúng ô nhiễm), dòng 5 **điểm và hệ số nhân** (`SCORE 1230 x3`), dòng 6 sự kiện (`HIT! 5 CELLS +150`, `MISSED!`, `AREA CLEARED!`, `AREA OVERRUN!`), dòng 7 hướng dẫn nút.
+**OLED ở BATTLE:** xem màn hình ở mục 6. Thanh năng lượng 10 ô, công suất hoặc cooldown còn lại, **điểm và hệ số nhân chữ to**.
 
 BATTLE không gửi telemetry định kỳ, chỉ gửi sự kiện.
 
@@ -279,14 +284,14 @@ BATTLE không gửi telemetry định kỳ, chỉ gửi sự kiện.
 **ATTACKED:**
 - LED2 nháy 2 Hz *(đề)*. Khi vào: `[EVT] Drone #3 flipped! The Last of EE2028`. Mỗi 1 s: `[ATTACK] Drone #3 Was Attacked! Rescue in 7 s` *(đề)*.
 - Buzzer phát **Morse SOS** liên tục, kêu cả khi im lặng. Matrix hiện chữ S-O-S theo nhịp.
-- OLED: `!! UNDER ATTACK !!`, **số giây còn lại cỡ chữ lớn**, `DOUBLE-PRESS TO RESCUE`.
+- OLED: `!! UNDER ATTACK !!`, **số giây còn lại cỡ chữ lớn**, `2x PRESS = RESCUE`.
 - **Được cứu** khi double press *(đề)* hoặc lệnh `RESCUE`. Báo `[EVT] Drone #3 rescued!`, về BATTLE. Matrix mặt cười 1 s, ba nốt đi lên.
 - Single press và 5-way bị bỏ qua.
 
 **TERMINATED** (hết 10 s không ai cứu):
 1. Chốt điểm (mục 11), ghi hộp đen vào flash (mục 16).
 2. `[EVT] Drone #3: no rescue. Black box saved. Self-destructing. Cutting all communication.`
-3. Matrix dấu X; OLED `DRONE #3 LOST / COMMS OFFLINE / BLACK BOX SAVED` (OLED tự giữ hình này sau khi MCU tắt); giai điệu kết thúc.
+3. Matrix dấu X; OLED `LOST` (chữ to), điểm và kỷ lục, `BLACK BOX SAVED` (OLED tự giữ hình này sau khi MCU tắt); giai điệu kết thúc.
 4. Tắt USART1, LED2, các ngắt, MCU vào Standby mode.
 5. Chỉ nút **RESET** đen (hoặc rút nguồn) mới thoát được.
 
@@ -298,7 +303,7 @@ BATTLE không gửi telemetry định kỳ, chỉ gửi sự kiện.
 - **32 sự kiện gần nhất** (bộ đệm vòng): đợt bắt đầu/dọn xong, nạp, bắn, đổi công suất, quá 75 %, bị lật, được cứu, về STANDBY, tự hủy.
 - **Bản tổng kết:** số đợt đã dọn, số phát bắn, số ô đã dọn, thời gian bay, lý do kết thúc (`RETURNED` / `RESCUE TIMEOUT`).
 - Khi tự hủy: ghi **một lần** vào **trang flash cuối cùng** (có mã kiểm tra), sống sót qua RESET và mất điện.
-- Xem ở STANDBY: lệnh `BLACKBOX` (in tổng kết rồi từng sự kiện) hoặc OLED trang 4.
+- Xem ở STANDBY: lệnh `BLACKBOX` (in tổng kết rồi từng sự kiện).
 
 ---
 

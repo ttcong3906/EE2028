@@ -166,6 +166,23 @@ static bool oled_has(int line, const char *txt) { return strstr(oled_text_cache[
 static int count(const char *needle) { int c = 0; const char *p = out; while ((p = strstr(p, needle))) { c++; p++; } return c; }
 static const char *last(const char *needle) { const char *p = out, *r = ""; while ((p = strstr(p, needle))) { r = p; p++; } return r; }
 
+/* OLED_DUMP=dir: save the OLED framebuffer as a 128x64 PBM at a few checkpoints. */
+static void dump_oled(const char *name)
+{
+    const char *dir = getenv("OLED_DUMP");
+    if (!dir) return;
+    char path[256];
+    snprintf(path, sizeof path, "%s/%s.pbm", dir, name);
+    FILE *f = fopen(path, "w");
+    if (!f) return;
+    fprintf(f, "P1\n128 64\n");
+    for (int y = 0; y < 64; y++) {
+        for (int x = 0; x < 128; x++) fputc((oled_fb[y / 8][x] >> (y % 8)) & 1 ? '1' : '0', f);
+        fputc('\n', f);
+    }
+    fclose(f);
+}
+
 static int fails = 0;
 #define CHECK(cond, msg) do { if (cond) printf("  PASS  %s\n", msg); else { printf("  FAIL  %s\n", msg); fails++; } } while (0)
 
@@ -191,31 +208,29 @@ int main(void)
     CHECK(strstr(out, "[TLM] T: 25.00 C, P: 1008.00 hPa, H: 60.00 %RH, A: 9.81 m/s^2, G: 1.00 dps, M: 41.23 uT\r\n") != NULL, "TLM has exactly 6 fields");
     CHECK(strstr(out, "[HUD]") == NULL && strstr(out, "[MAP]") == NULL, "no dashboard lines any more");
 
-    printf("== STANDBY scouting + OLED pages ==\n");
+    printf("== STANDBY scouting + OLED ==\n");
     clear_out(); run_ms(3100);
-    CHECK(oled_has(0, "DRONE#3 STANDBY  1/4") && oled_has(1, "T  25.0 C") && oled_has(7, "STATUS: ALL NORMAL"), "after 2.5 s: OLED page 1/4 = sensors");
+    CHECK(oled_has(0, "STANDBY  BEST 0") && oled_has(1, "NESTS 0/3") && oled_has(3, "ECHO -") &&
+          oled_has(5, "PINGS 3/3  AREA 6/64") && oled_has(7, "1x PING   2x BATTLE"), "after 2.5 s: one STANDBY screen, big NESTS + ECHO");
+    CHECK(oled_text_cache[1][0] == '\x01' && oled_text_cache[3][0] == '\x01', "nests and echo in big 2x text");
     CHECK(strstr(out, "[EVT] Possible human habitat found: T 25.0 C, H 60 %RH") != NULL && habitat_count == 1, "habitat after 3 s of T 20-32 C and H 40-70 %RH");
     run_ms(200);
     CHECK(memcmp(mx_shown, GL_HOUSE, 8) == 0, "matrix shows the house icon");
     clear_out(); s_hum = 85; run_ms(1000);
     CHECK(strstr(out, "Habitat conditions lost") && strstr(out, "[WARN] H: 85.00 %RH, exceeds threshold of 80.00 %RH") && count("[TLM]") == 0, "humid: habitat lost + WARN instead of TLM");
     run_ms(150);
-    CHECK(oled_has(7, "WARN: HHI"), "OLED shows the warning");
+    CHECK(oled_has(6, "WARN: HHI"), "OLED shows the warning");
     s_hum = 60;
     run_ms(2500);
     clear_out(); single();
     CHECK(strstr(out, "[EVT] Sonar ping 1/3: echo from") && pings_left == 2, "single press -> sonar ping 1/3");
     CHECK(strstr(out, "[REPORT] Drone #3: flight") && strstr(out, "pings left 2/3, score 0, habitat found 2x, zombies down 0, shots 0"), "... plus the scout report");
-    clear_out(); fw_tap(FIVEWAY_IDX_CENTER); run_ms(150);
-    CHECK(oled_page == 1 && oled_has(0, "2/4") && oled_has(1, "NESTS FOUND   0/3"), "5-way centre short -> OLED page 2/4 = scouting");
-    fw_tap(FIVEWAY_IDX_CENTER); run_ms(150);
-    CHECK(oled_page == 2 && oled_has(1, "SCORE        0") && oled_has(2, "BEST         0") && oled_has(4, "ZOMBIES DOWN 0"), "page 3/4 = mission (score, best)");
-    fw_tap(FIVEWAY_IDX_CENTER); run_ms(150);
-    CHECK(oled_page == 3 && oled_has(1, "BLACK BOX: EMPTY"), "page 4/4 = black box (empty before the first sortie)");
-    fw_tap(FIVEWAY_IDX_CENTER);
-    CHECK(oled_page == 0, "and back to page 1");
+    run_ms(1500);
+    clear_out(); fw_tap(FIVEWAY_IDX_CENTER);
+    CHECK(strstr(out, "[EVT] Sonar ping 2/3") && pings_left == 1, "5-way centre tap = sonar ping too");
+    pings_left = 2;
     clear_out(); s_press = 1007.5f; fw_hold(FIVEWAY_IDX_CENTER, 1100);
-    CHECK(strstr(out, "[EVT] Altitude zero reset at 1007.50 hPa") != NULL && oled_page == 0, "5-way centre held 1 s -> altitude zero (no page change)");
+    CHECK(strstr(out, "[EVT] Altitude zero reset at 1007.50 hPa") != NULL && !strstr(out, "Sonar"), "5-way centre held 1 s -> altitude zero (no ping)");
     CHECK(count("Altitude zero reset") == 1, "hold action fires once");
     s_press = 1008.0f; altitude_zero(1008.0f);
 
@@ -243,9 +258,9 @@ int main(void)
     run_ms(400);
     CHECK((mx_shown[4] & (0x80u >> 4)) && (mx_shown[3] & (0x80u >> 5)) && (mx_shown[2] & (0x80u >> 6)) && (mx_shown[1] & (0x80u >> 7)),
           "matrix: echo ray 4 cells towards NE");
-    fw_tap(FIVEWAY_IDX_CENTER); run_ms(150);
-    CHECK(oled_has(2, "PINGS LEFT    2/3") && oled_has(4, "ECHO: 4 CELLS NE"), "OLED scouting page: pings left + last echo");
-    fw_tap(FIVEWAY_IDX_CENTER); fw_tap(FIVEWAY_IDX_CENTER); fw_tap(FIVEWAY_IDX_CENTER);
+    run_ms(150);
+    CHECK(oled_has(5, "PINGS 2/3") && oled_has(3, "ECHO 4 NE"), "OLED: pings left + big echo direction");
+    dump_oled("1_standby");
     run_ms(1000); type("PING\r"); run_ms(1000); type("PING\r"); run_ms(1000);
     clear_out(); type("PING\r");
     CHECK(pings_left == 0 && strstr(out, "[EVT] Sonar: no pings left in this area"), "only 3 pings per area");
@@ -260,9 +275,8 @@ int main(void)
         CHECK(drone_lit == (((now / 500U) & 1U) != 0) && fog_lit && !(mx_shown[6] & (0x80u >> 3)),
               "matrix: fog lit, scanned dark, drone blinking");
     }
-    fw_tap(FIVEWAY_IDX_CENTER); run_ms(150);
-    CHECK(oled_has(1, "NESTS FOUND   2/3") && oled_has(3, "(6,2)"), "OLED scouting page follows the map");
-    fw_tap(FIVEWAY_IDX_CENTER); fw_tap(FIVEWAY_IDX_CENTER); fw_tap(FIVEWAY_IDX_CENTER);
+    run_ms(150);
+    CHECK(oled_has(1, "NESTS 2/3") && oled_has(0, "BEST"), "OLED follows the map");
     clear_out(); single();
     CHECK(strstr(out, "area scanned") && strstr(out, "nests found 2/3") && strstr(out, "score 40"), "scout report shows scanned area, nests, score");
     pings_left = 2;
@@ -338,7 +352,8 @@ int main(void)
         memcpy(map_rows, keep, 8);
         CHECK(slow > 1150 && fast == 350, "heartbeat: ~1200 ms nearly empty, 350 ms at 75 %");
     }
-    CHECK(oled_has(0, "WAVE 1   TARGETS") && oled_has(3, "ENERGY  0/10 P5 RULE") && oled_text_cache[1][0] == '\x03', "OLED battle page with the energy bar");
+    CHECK(oled_has(0, "WAVE 1     TARGETS 3") && oled_has(3, "0/10  P5 RULE") && oled_text_cache[1][0] == '\x03' &&
+          oled_has(4, "0 x1") && oled_has(7, "1x CHARGE 2x STANDBY"), "OLED battle screen: energy bar, big score");
     memset(map_rows, 0, 8);
     for (int y = 2; y <= 4; y++) for (int x = 2; x <= 4; x++) cell_set(x, y);   /* 3x3 block */
     cell_set(7, 0);                                   /* keep the wave alive */
@@ -350,7 +365,8 @@ int main(void)
     CHECK(!bz_playing(SND_HEART), "shot sound interrupts the heartbeat");
     CHECK(!cooldown_active && zombies_down == 9, "rule mode: no cooldown, 9 zombies down");
     run_ms(150);
-    CHECK(oled_has(6, "HIT! 9 +90 x1") && oled_has(5, "SCORE 90"), "OLED event line + score");
+    CHECK(oled_has(6, "HIT! 9 +90 x1") && oled_has(4, "90 x2") && oled_text_cache[4][0] == '\x01', "OLED event line + big score with next multiplier");
+    dump_oled("2_battle");
 
     printf("== weapon power: 5-way centre hold ==\n");
     clear_out(); fw_hold(FIVEWAY_IDX_CENTER, 1100);
@@ -417,7 +433,7 @@ int main(void)
     run_ms(20);
     CHECK(!wave_active && strstr(out, "[EVT] Wave 1 cleared! AREA CLEARED") && bb.waves == 1, "AREA CLEARED");
     run_ms(400);
-    CHECK(memcmp(mx_shown, GL_CHECK, 8) == 0 && oled_has(0, "WAVE 1   CLEARED!"), "matrix check mark + OLED during the pause");
+    CHECK(memcmp(mx_shown, GL_CHECK, 8) == 0 && oled_has(0, "WAVE 1     CLEARED!"), "matrix check mark + OLED during the pause");
     laser_energy = 4; clear_out(); single();
     CHECK(strstr(out, "charged: 4/10 -> 7/10") && !strstr(out, "FIRED") && laser_energy == 7, "no shot into an empty map during the pause");
     clear_out(); run_ms(2000);
@@ -441,7 +457,8 @@ int main(void)
     CHECK(bz_playing(SND_SOS), "SOS beacon playing");
     CHECK(strstr(out, "[ATTACK] Drone #3 Was Attacked! Rescue in 10 s") != NULL, "attack message with drone id");
     run_ms(150);
-    CHECK(oled_has(0, "!! UNDER ATTACK !!") && oled_text_cache[2][0] == '\x01' && strstr(oled_text_cache[2], "s"), "OLED big rescue countdown");
+    CHECK(oled_has(0, "!! UNDER ATTACK !!") && oled_text_cache[2][0] == '\x01' && oled_has(2, "10 s") && oled_has(6, "2x PRESS = RESCUE"), "OLED big rescue countdown");
+    dump_oled("3_attacked");
     t0 = led_toggles; run_ms(2000);
     CHECK(led_toggles - t0 == 8, "LED 2 Hz");
     cfg.muted = true;
@@ -479,9 +496,6 @@ int main(void)
     CHECK(strstr(out, "LAST MISSION: waves cleared 1, shots fired") && strstr(out, "END: RETURNED"), "black box summary (RETURNED)");
     CHECK(strstr(out, "[BBOX] Last sortie (RAM), drone #3") && strstr(out, "WAVE CLEARED") && strstr(out, "WEAPON") &&
           strstr(out, "FLIPPED Az=-9.80") && strstr(out, "RESCUED") && strstr(out, "BACK TO STANDBY"), "BLACKBOX prints the sortie");
-    oled_page = 3; bb_view = 0; fw_tap(FIVEWAY_IDX_RIGHT); fw_tap(FIVEWAY_IDX_RIGHT); run_ms(150);
-    CHECK(bb_view == 2 && oled_has(5, "EVT 03/") && oled_has(4, "END: RETURNED") && scout_x == 3, "OLED black box page: left/right browse (scout does not move)");
-    oled_page = 0;
     weapon_sel = true; weapon_p = 2;
     run_ms(1500);
     clear_out(); type("HISCORE RESET\r");
@@ -510,7 +524,8 @@ int main(void)
     CHECK(strstr(out, "[EVT] Drone #3: no rescue. Black box saved. Self-destructing. Cutting all communication.") != NULL, "last message");
     CHECK(strstr(out, "[EVT] Mission score:") != NULL, "score settled before self-destruct");
     CHECK(standby_entered && !uart_enabled, "comms cut, MCU Standby");
-    CHECK(oled_has(1, "DRONE #3 LOST") && oled_has(3, "COMMS OFFLINE") && oled_dirty == 0, "OLED left on the final screen");
+    CHECK(oled_has(1, "LOST") && oled_has(4, "SCORE ") && oled_has(5, "BLACK BOX SAVED") && oled_dirty == 0, "OLED left on the final screen");
+    dump_oled("4_terminated");
     CHECK(erase_count[0] == cfg_erases, "black box save does not touch the config page");
     bb_flash_check();
     CHECK(bb_flash_valid && bb_flash_image()->drone_id == 3, "black box valid in flash after self-destruct");
