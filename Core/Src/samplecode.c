@@ -157,14 +157,12 @@ static uint32_t warn_mask = 0;
 static int      laser_energy = 0;
 static uint32_t score = 0;               /* current mission (scouting + sortie) */
 static int      streak = 0;              /* consecutive hitting shots */
-static uint32_t shots_fired = 0, zombies_down = 0;
 static uint32_t cooldown_until = 0;
 static bool     cooldown_active = false;
 static bool     weapon_sel = false;      /* false = RULE (5/10, no cooldown) */
 static int      weapon_p = 1;            /* power in SEL mode, 1..5 */
 
-/* Scouting statistics */
-static uint32_t habitat_count = 0;
+/* Scouting */
 static bool     habitat_found = false;
 static int      habitat_secs = 0;
 
@@ -785,7 +783,7 @@ static void oled_flush_step(void)
                 if (++fails >= 10) {                                /* unplugged */
                     fails = 0;
                     oled_ok = false;
-                    uart_write("[EVT] OLED lost (no answer on I2C)\r\n");
+                    uart_write("[EVT] OLED lost\r\n");
                 }
                 return;
             }
@@ -1337,10 +1335,9 @@ static void wave_start(int n)
     map_live = true;
     wave_active = true;
     t_spread = HAL_GetTick();
-    char extra[48] = "";
-    if (big) snprintf(extra, sizeof(extra), " (%d scouted nest%s, bigger)", big, big > 1 ? "s" : "");
-    uart_printf("[EVT] Wave %d incoming: %d outbreaks%s, spreading every %lu.%lu s\r\n",
-                n, seeds, extra, (unsigned long)(spread_ms / 1000U), (unsigned long)((spread_ms % 1000U) / 100U));
+    char extra[24] = "";
+    if (big) snprintf(extra, sizeof(extra), " (%d scouted)", big);
+    uart_printf("[EVT] Wave %d: %d outbreaks%s\r\n", n, seeds, extra);
     bb_log(BB_WAVE, n, seeds, big, 0);
 }
 
@@ -1354,7 +1351,6 @@ static void map_new(void)
             int d = abs(x - 3) + abs(y - 3);
             if (rbit(scout_found, x, y) && d < best) { best = d; aim_x = x; aim_y = y; }
         }
-        uart_printf("[EVT] Target locked on scouted nest at (%d,%d)\r\n", aim_x, aim_y);
     }
 }
 
@@ -1421,15 +1417,14 @@ static void scout_scan(bool announce)
             scout_found_n++;
             if (announce) {
                 score += 20;
-                uart_printf("[EVT] Scouting: nest found at (%d,%d) (%d/%d)\r\n", x, y, scout_found_n, SCOUT_NESTS);
+                uart_printf("[EVT] Nest found (%d/%d)\r\n", scout_found_n, SCOUT_NESTS);
                 char t[24];
                 snprintf(t, sizeof(t), "NEST FOUND %d/%d", scout_found_n, SCOUT_NESTS);
                 event_text(t, 2);
                 if (scout_found_n == SCOUT_NESTS) {
                     uint32_t bonus = 30U + 20U * (uint32_t)pings_left;
                     score += bonus;
-                    uart_printf("[EVT] Scouting complete: all %d nests located, +%lu bonus (%d pings left). Score %lu\r\n",
-                                SCOUT_NESTS, (unsigned long)bonus, pings_left, (unsigned long)score);
+                    uart_printf("[EVT] All nests found, +%lu bonus\r\n", (unsigned long)bonus);
                     bz_fx(SND(SND_VICTORY));
                 } else {
                     bz_fx(SND(SND_ALARM));
@@ -1490,7 +1485,7 @@ static void sonar_ping(void)
 {
     if (state != ST_STANDBY || !scout_ready) return;
     if (pings_left <= 0) {
-        uart_write("[EVT] Sonar: no pings left in this area\r\n");
+        uart_write("[EVT] No pings left\r\n");
         event_text("NO PINGS LEFT", 1);
         bz_fx(SND(SND_NOPING));
         return;
@@ -1510,7 +1505,7 @@ static void sonar_ping(void)
         echo_d = 0;
         sonar_echo_ms = 0;
         strcpy(echo_short, "NONE");
-        uart_printf("[EVT] Sonar ping %d/%d: no echo, all nests located\r\n", SONAR_PINGS - pings_left, SONAR_PINGS);
+        uart_printf("[EVT] Ping %d/%d: no echo\r\n", SONAR_PINGS - pings_left, SONAR_PINGS);
         bz_fx(snd_echo, 1);
     } else {
         echo_d = best;
@@ -1521,7 +1516,7 @@ static void sonar_ping(void)
         snd_echo[1] = (note_t){ 0, 0, (uint16_t)(sonar_echo_ms - 60U), 0 };
         snd_echo[2] = (note_t){ f, f, 90, 0 };                /* the echo */
         snprintf(echo_short, sizeof(echo_short), "%d %s", best, dir8(bx, by));
-        uart_printf("[EVT] Sonar ping %d/%d: echo from %d cell%s %s\r\n", SONAR_PINGS - pings_left, SONAR_PINGS,
+        uart_printf("[EVT] Ping %d/%d: echo %d cell%s %s\r\n", SONAR_PINGS - pings_left, SONAR_PINGS,
                     best, best > 1 ? "s" : "", dir8(bx, by));
         bz_fx(snd_echo, 3);
     }
@@ -1763,17 +1758,22 @@ static void led_set(bool on)
 
 static void send_stat(void)
 {
-    int p = weapon_power();
-    uart_printf("[STAT] DRONE: #%d, MODE: %s, WAVE: %d, LASER: %d/10, WEAPON: %s %d/10, SHOTS: %lu, ZOMBIES DOWN: %lu, ALT: %+.1f m, SCOUTED: %d/64, NESTS: %d/%d\r\n",
-                DRONE_ID, mode_name(state), map_live ? wave_no : 0, laser_energy,
-                weapon_sel ? "SELECT" : "RULE", p,
-                (unsigned long)shots_fired, (unsigned long)zombies_down,
-                altitude_m(), scout_scanned(), scout_found_n, SCOUT_NESTS);
-    uart_printf("[STAT] SCORE: %lu, BEST: %lu, HABITAT: %s, MUTE: %s, OLED: %s, LED MATRIX: %s, 5-WAY: %s\r\n",
-                (unsigned long)score, (unsigned long)cfg.hiscore, habitat_found ? "FOUND" : "SEARCHING",
-                cfg.muted ? "ON" : "OFF",
-                oled_ok ? "OK" : "missing",
-                mx_ok ? "OK" : "missing", fiveway_addr ? "OK" : "missing");
+    char missing[32] = "";
+    if (!mx_ok)        strcat(missing, " matrix");
+    if (!oled_ok)      strcat(missing, " OLED");
+    if (!fiveway_addr) strcat(missing, " 5-way");
+    char tail[48] = "";
+    if (missing[0]) snprintf(tail, sizeof(tail), ", missing:%s", missing);
+    if (state == ST_STANDBY)
+        uart_printf("[STAT] STANDBY, alt %+.1f m, nests %d/%d, pings %d/%d, score %lu, best %lu%s\r\n",
+                    altitude_m(), scout_found_n, SCOUT_NESTS, pings_left, SONAR_PINGS,
+                    (unsigned long)score, (unsigned long)cfg.hiscore, tail);
+    else if (state == ST_BATTLE)
+        uart_printf("[STAT] BATTLE, wave %d, laser %d/10, %s %d/10, score %lu, best %lu%s\r\n",
+                    wave_no, laser_energy, weapon_sel ? "power" : "rule", weapon_power(),
+                    (unsigned long)score, (unsigned long)cfg.hiscore, tail);
+    else
+        uart_printf("[STAT] ATTACKED, rescue in %d s\r\n", rescue_secs_left());
 }
 
 static void laser_try_fire(void);
@@ -1783,7 +1783,7 @@ static void score_finalize(bool play)
 {
     uart_printf("[EVT] Mission score: %lu (best %lu)\r\n", (unsigned long)score, (unsigned long)cfg.hiscore);
     if (score <= cfg.hiscore) return;
-    uart_printf("[EVT] NEW HIGH SCORE: %lu (was %lu)\r\n", (unsigned long)score, (unsigned long)cfg.hiscore);
+    uart_printf("[EVT] NEW HIGH SCORE: %lu\r\n", (unsigned long)score);
     cfg.hiscore = score;
     cfg_save();
     event_text("NEW HIGH SCORE!", EV_EFFECT);
@@ -1822,11 +1822,8 @@ static void enter_battle(bool from_rescue)
         bb_clear();                                     /* new sortie, new black box */
         if (bb_flash_valid) { flash_erase_tail(FLASH_PAGE_BLACKBOX); bb_flash_valid = false; }
         if (pings_left > 0) {                           /* unused sonar pings -> laser energy */
-            int before = laser_energy;
             laser_energy += pings_left;
             if (laser_energy > LASER_MAX) laser_energy = LASER_MAX;
-            uart_printf("[EVT] Unused sonar pings: +%d/10 laser energy (%d/10 -> %d/10)\r\n",
-                        pings_left, before, laser_energy);
             pings_left = 0;
         }
         bb_log(BB_SORTIE, laser_energy, weapon_power(), 0, 0);
@@ -1838,7 +1835,6 @@ static void enter_battle(bool from_rescue)
     t_flip_poll = HAL_GetTick();
     t_spread = HAL_GetTick();
     if (!wave_active) wave_pause_t = HAL_GetTick();
-    send_stat();
     if (!from_rescue) laser_try_fire();                 /* bonus energy may already be enough */
 }
 
@@ -1857,7 +1853,7 @@ static void enter_attacked(float az)
 
 static void rescue(void)
 {
-    uart_printf("[EVT] Drone #%d rescued! Returning to BATTLE MODE\r\n", DRONE_ID);
+    uart_write("[EVT] Rescued! Back to BATTLE\r\n");
     event_text("RESCUED!", EV_EFFECT);
     bb_log(BB_RESCUED, rescue_secs_left(), 0, 0, 0);
     flip_armed = false;
@@ -1918,7 +1914,6 @@ static void laser_fire(void)
     int p = weapon_power();
     int before = laser_energy;
     laser_energy -= p;
-    shots_fired++;
 
     /* No 5-way to aim with: lock the nearest target. */
     if (!fiveway_addr) aim_nearest();
@@ -1928,7 +1923,6 @@ static void laser_fire(void)
     for (int y = 0; y < 8; y++) for (int x = 0; x < 8; x++) {
         if ((blast_rows[y] & (0x80U >> x)) && cell(x, y)) { cell_clr(x, y); cleared++; }
     }
-    zombies_down += (uint32_t)cleared;
     bb.shots++;
     bb.cells = (uint16_t)(bb.cells + cleared);
     fire_anim = true; fire_t0 = HAL_GetTick(); fire_x = aim_x; fire_y = aim_y;
@@ -1941,16 +1935,14 @@ static void laser_fire(void)
         uint32_t pts = 10U * (uint32_t)cleared * (uint32_t)mult;
         score += pts;
         streak++;
-        uart_printf("[EVT] LASER FIRED (%d/10, %s) at (%d,%d): %d cell%s cleared, +%lu points (x%d). Energy %d/10 -> %d/10. Zombies down: %lu\r\n",
-                    p, power_name(p), aim_x, aim_y, cleared, cleared > 1 ? "s" : "", (unsigned long)pts, mult,
-                    before, laser_energy, (unsigned long)zombies_down);
+        uart_printf("[EVT] Laser fired: %d down, +%lu x%d. Energy %d/10 -> %d/10\r\n",
+                    cleared, (unsigned long)pts, mult, before, laser_energy);
         char t[40];
         snprintf(t, sizeof(t), "HIT! %d +%lu x%d", cleared, (unsigned long)pts, mult);
         event_text(t, EV_EFFECT);
     } else {
         streak = 0;
-        uart_printf("[EVT] LASER FIRED (%d/10, %s) at (%d,%d): missed, no zombies there. Energy %d/10 -> %d/10\r\n",
-                    p, power_name(p), aim_x, aim_y, before, laser_energy);
+        uart_printf("[EVT] Laser fired: missed. Energy %d/10 -> %d/10\r\n", before, laser_energy);
         event_text("MISSED!", EV_EFFECT);
     }
     bb_log(BB_FIRE, p, aim_x, aim_y, cleared);
@@ -1979,7 +1971,7 @@ static void laser_charge(void)
     int before = laser_energy;
     laser_energy += LASER_CHARGE_STEP;
     if (laser_energy > LASER_MAX) laser_energy = LASER_MAX;
-    uart_printf("[EVT] LASER charged: %d/10 -> %d/10\r\n", before, laser_energy);
+    uart_printf("[EVT] Laser charged: %d/10 -> %d/10\r\n", before, laser_energy);
     bb_log(BB_CHARGE, before, laser_energy, 0, 0);
     if (laser_can_fire()) laser_fire();
     else bz_fx(SND(SND_CHARGE));
@@ -1995,10 +1987,10 @@ static void weapon_next(void)
     int  p   = weapon_p;
     char t[24];
     if (sel) {
-        uart_printf("[EVT] Weapon: power %d/10 (%s), cooldown %d s\r\n", p, power_name(p), p >= 2 ? p : 0);
+        uart_printf("[EVT] Weapon: power %d/10\r\n", p);
         snprintf(t, sizeof(t), "POWER %d/10 %s", p, power_name(p));
     } else {
-        uart_write("[EVT] Weapon: rule mode 5/10, no cooldown\r\n");
+        uart_write("[EVT] Weapon: rule mode 5/10\r\n");
         snprintf(t, sizeof(t), "RULE MODE 5/10");
     }
     event_text(t, EV_NORMAL);
@@ -2017,7 +2009,6 @@ static void aim_move(int dx, int dy)
 static void target_lock(void)
 {
     aim_nearest();
-    uart_printf("[EVT] Target locked at (%d,%d)\r\n", aim_x, aim_y);
     event_text("TARGET LOCKED", EV_NORMAL);
 }
 
@@ -2025,27 +2016,16 @@ static void target_lock(void)
 static void altitude_rezero(void)
 {
     altitude_zero(BSP_PSENSOR_ReadPressure());
-    uart_printf("[EVT] Altitude zero reset at %.2f hPa\r\n", p0_hpa);
+    uart_write("[EVT] Altitude zero reset\r\n");
     event_text("ALTITUDE ZERO SET", EV_NORMAL);
     bz_fx(SND(SND_MODE));
-}
-
-/* --- Scout report (single press in STANDBY) --- */
-static void scout_report(void)
-{
-    uint32_t s = (HAL_GetTick() - boot_tick) / 1000U;
-    uart_printf("[REPORT] Drone #%d: flight %02lu:%02lu, alt %+.1f m, area scanned %d/64, nests found %d/%d, "
-                "pings left %d/%d, score %lu, habitat found %lux, zombies down %lu, shots %lu\r\n",
-                DRONE_ID, (unsigned long)(s / 60U), (unsigned long)(s % 60U), altitude_m(),
-                scout_scanned(), scout_found_n, SCOUT_NESTS, pings_left, SONAR_PINGS, (unsigned long)score,
-                (unsigned long)habitat_count, (unsigned long)zombies_down, (unsigned long)shots_fired);
 }
 
 /* --- Actions shared by the push button and UART commands --- */
 static void action_single(void)
 {
     switch (state) {
-    case ST_STANDBY: sonar_ping(); scout_report(); break;
+    case ST_STANDBY: sonar_ping(); break;
     case ST_BATTLE:  laser_charge(); break;
     default: break;                         /* ignored while attacked (spec) */
     }
@@ -2094,7 +2074,7 @@ static void fiveway_tick(void)
             fw_fail = 0;
             fiveway_addr = 0;
             fw_bits = fw_prev = 0;
-            uart_write("[EVT] 5-way switch lost (no answer on I2C)\r\n");
+            uart_write("[EVT] 5-way lost\r\n");
         }
         return;
     }
@@ -2132,17 +2112,13 @@ static void habitat_check(void)
         if (habitat_secs < 100) habitat_secs++;
         if (!habitat_found && habitat_secs >= HABITAT_HOLD_S) {
             habitat_found = true;
-            habitat_count++;
-            uart_printf("[EVT] Possible human habitat found: T %.1f C, H %.0f %%RH\r\n", sens.v[S_T], sens.v[S_H]);
+            uart_printf("[EVT] Habitat found (T %.1f C, H %.0f %%RH)\r\n", sens.v[S_T], sens.v[S_H]);
             show_icon(GL_HOUSE, HOUSE_ICON_MS);
             bz_fx(SND(SND_HABITAT));
         }
     } else {
         habitat_secs = 0;
-        if (habitat_found) {
-            habitat_found = false;
-            uart_write("[EVT] Habitat conditions lost\r\n");
-        }
+        habitat_found = false;
     }
 }
 
@@ -2202,8 +2178,7 @@ static void battle_tick(void)
         bb.waves++;
         bb_log(BB_WAVE_CLEAR, wave_no, bb.cells, 0, 0);
         score += 50U * (uint32_t)wave_no;
-        uart_printf("[EVT] Wave %d cleared! AREA CLEARED (%u cells cleared this sortie), +%d bonus. Score %lu\r\n",
-                    wave_no, bb.cells, 50 * wave_no, (unsigned long)score);
+        uart_printf("[EVT] Wave %d cleared, +%d\r\n", wave_no, 50 * wave_no);
         event_text("AREA CLEARED!", EV_EFFECT);
         bz_fx(SND(SND_VICTORY));
     } else if (map_live && !wave_active && elapsed(wave_pause_t, WAVE_PAUSE_MS)) {
@@ -2532,10 +2507,10 @@ static void app_init(void)
     fiveway_probe();
     GPIO_IT_Init();
 
-    uart_printf("\r\n=== Drone #%d online === silent: %s\r\n", DRONE_ID, cfg.muted ? "ON" : "OFF");
-    uart_printf("[EVT] System check: sensors %s, LED matrix %s, OLED %s, 5-way %s. Type HELP for commands.\r\n",
-                sensors_ok ? "OK" : "FAIL", mx_ok ? "OK" : "NOT FOUND", oled_ok ? "OK" : "NOT FOUND",
-                fiveway_addr ? "OK" : "NOT FOUND");
+    uart_printf("\r\n=== Drone #%d online ===%s\r\n", DRONE_ID, cfg.muted ? " (muted)" : "");
+    uart_printf("[EVT] Check: sensors %s, matrix %s, OLED %s, 5-way %s\r\n",
+                sensors_ok ? "OK" : "FAIL", mx_ok ? "OK" : "MISSING", oled_ok ? "OK" : "MISSING",
+                fiveway_addr ? "OK" : "MISSING");
 
     /* Altitude zero: average of 10 readings */
     float sum = 0.0f;
@@ -2543,13 +2518,12 @@ static void app_init(void)
     float p0 = sum / 10.0f;
     if (p0 < 300.0f || p0 > 1200.0f) p0 = 1013.25f;
     altitude_zero(p0);
-    uart_printf("[EVT] Altitude zero at %.2f hPa\r\n", p0);
 
     bb_clear();
     bb_flash_check();
     if (bb_flash_valid) {
         const bb_image_t *f = bb_flash_image();
-        uart_printf("[EVT] Black box of Drone #%d recovered (%d records). Type BLACKBOX to read\r\n", f->drone_id, f->count);
+        uart_printf("[EVT] Black box recovered (%d records), type BLACKBOX\r\n", f->count);
     }
 
     /* Seed the map generator from sensor noise so every power-on is a new area. */
@@ -2598,7 +2572,7 @@ static void app_loop(void)
         }
         if (!fiveway_addr && ENABLE_FIVEWAY) {                     /* newly plugged in */
             fiveway_probe();
-            if (fiveway_addr) uart_printf("[EVT] 5-way switch connected at 0x%02X\r\n", fiveway_addr);
+            if (fiveway_addr) uart_write("[EVT] 5-way connected\r\n");
         }
     }
 

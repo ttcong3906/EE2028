@@ -196,11 +196,11 @@ int main(void)
     cfg_load();
     app_init(); service_isrs();
     CHECK(!cfg.muted && cfg.hiscore == 0, "blank flash -> sound on, no high score");
-    CHECK(strstr(out, "=== Drone #3 online === silent: OFF") != NULL, "boot banner");
+    CHECK(strstr(out, "=== Drone #3 online ===\r\n") != NULL, "boot banner");
     CHECK(fiveway_addr == 0x03 && max_khz_fw == 25, "5-way found at 25 kHz with the real ID byte order");
     if (getenv("DBG")) { printf("%s\n", out); for (int i = 0; i < 8; i++) printf("OLED%d [%s]\n", i, oled_text_cache[i]); }
-    CHECK(strstr(out, "[EVT] System check: sensors OK, LED matrix OK, OLED OK, 5-way OK") != NULL, "system check line");
-    CHECK(strstr(out, "[EVT] Altitude zero at 1008.00 hPa") && !strstr(out, "Lab bearing"), "altitude zero at boot (no compass)");
+    CHECK(strstr(out, "[EVT] Check: sensors OK, matrix OK, OLED OK, 5-way OK\r\n") != NULL, "system check line");
+    CHECK(p0_hpa == 1008.0f && !strstr(out, "Altitude"), "altitude zero at boot, silently");
     CHECK(strstr(out, "Entering STANDBY MODE") != NULL, "Entering STANDBY MODE");
     run_ms(150);
     CHECK(memcmp(mx_shown, GL_DIGIT3, 8) == 0, "matrix shows drone number 3 at boot");
@@ -213,24 +213,24 @@ int main(void)
     CHECK(oled_has(0, "STANDBY  BEST 0") && oled_has(1, "NESTS 0/3") && oled_has(3, "ECHO -") &&
           oled_has(5, "PINGS 3/3  AREA 6/64") && oled_has(7, "1x PING   2x BATTLE"), "after 2.5 s: one STANDBY screen, big NESTS + ECHO");
     CHECK(oled_text_cache[1][0] == '\x01' && oled_text_cache[3][0] == '\x01', "nests and echo in big 2x text");
-    CHECK(strstr(out, "[EVT] Possible human habitat found: T 25.0 C, H 60 %RH") != NULL && habitat_count == 1, "habitat after 3 s of T 20-32 C and H 40-70 %RH");
+    CHECK(strstr(out, "[EVT] Habitat found (T 25.0 C, H 60 %RH)") != NULL && habitat_found, "habitat after 3 s of T 20-32 C and H 40-70 %RH");
     run_ms(200);
     CHECK(memcmp(mx_shown, GL_HOUSE, 8) == 0, "matrix shows the house icon");
     clear_out(); s_hum = 85; run_ms(1000);
-    CHECK(strstr(out, "Habitat conditions lost") && strstr(out, "[WARN] H: 85.00 %RH, exceeds threshold of 80.00 %RH") && count("[TLM]") == 0, "humid: habitat lost + WARN instead of TLM");
+    CHECK(!habitat_found && strstr(out, "[WARN] H: 85.00 %RH, exceeds threshold of 80.00 %RH") && count("[TLM]") == 0, "humid: habitat lost + WARN instead of TLM");
     run_ms(150);
     CHECK(oled_has(6, "WARN: HHI"), "OLED shows the warning");
     s_hum = 60;
     run_ms(2500);
     clear_out(); single();
-    CHECK(strstr(out, "[EVT] Sonar ping 1/3: echo from") && pings_left == 2, "single press -> sonar ping 1/3");
-    CHECK(strstr(out, "[REPORT] Drone #3: flight") && strstr(out, "pings left 2/3, score 0, habitat found 2x, zombies down 0, shots 0"), "... plus the scout report");
+    CHECK(strstr(out, "[EVT] Ping 1/3: echo") && pings_left == 2, "single press -> sonar ping 1/3");
+    CHECK(count("\r\n") == count("[TLM]") + 1 && !strstr(out, "[REPORT]"), "ping prints one line only");
     run_ms(1500);
     clear_out(); fw_tap(FIVEWAY_IDX_CENTER);
-    CHECK(strstr(out, "[EVT] Sonar ping 2/3") && pings_left == 1, "5-way centre tap = sonar ping too");
+    CHECK(strstr(out, "[EVT] Ping 2/3") && pings_left == 1, "5-way centre tap = sonar ping too");
     pings_left = 2;
     clear_out(); s_press = 1007.5f; fw_hold(FIVEWAY_IDX_CENTER, 1100);
-    CHECK(strstr(out, "[EVT] Altitude zero reset at 1007.50 hPa") != NULL && !strstr(out, "Sonar"), "5-way centre held 1 s -> altitude zero (no ping)");
+    CHECK(strstr(out, "[EVT] Altitude zero reset") && p0_hpa == 1007.5f && !strstr(out, "Ping"), "5-way centre held 1 s -> altitude zero (no ping)");
     CHECK(count("Altitude zero reset") == 1, "hold action fires once");
     s_press = 1008.0f; altitude_zero(1008.0f);
 
@@ -241,16 +241,16 @@ int main(void)
     rset(scout_nest, 3, 4); rset(scout_nest, 6, 1); rset(scout_nest, 0, 0);
     scout_x = 3; scout_y = 7; scout_found_n = 0; scout_scan(false);
     clear_out(); fw_tap(FIVEWAY_IDX_UP);
-    CHECK(scout_y == 6 && strstr(out, "nest found") == NULL, "5-way up: scout moves 1 cell");
+    CHECK(scout_y == 6 && strstr(out, "Nest found") == NULL, "5-way up: scout moves 1 cell");
     fw_tap(FIVEWAY_IDX_UP);
-    CHECK(strstr(out, "[EVT] Scouting: nest found at (3,4) (1/3)") && scout_found_n == 1, "3x3 scan finds the nest next to the drone");
+    CHECK(strstr(out, "[EVT] Nest found (1/3)") && rbit(scout_found, 3, 4) && scout_found_n == 1, "3x3 scan finds the nest next to the drone");
     CHECK(!rbit(scout_fog, 2, 4) && !rbit(scout_fog, 4, 6) && rbit(scout_fog, 3, 3), "fog cleared only around the path");
     CHECK(score == 20, "nest found: +20 points");
 
     printf("== sonar ==\n");
     run_ms(600);
     clear_out(); type("PING\r");
-    CHECK(strstr(out, "[EVT] Sonar ping 1/3: echo from 4 cells NE") && pings_left == 2, "PING: nearest unfound nest (6,1) is 4 cells NE");
+    CHECK(strstr(out, "[EVT] Ping 1/3: echo 4 cells NE") && pings_left == 2, "PING: nearest unfound nest (6,1) is 4 cells NE");
     CHECK(snd_echo[1].ms == 490 && snd_echo[2].f0 == 1600 && bz_seq == snd_echo, "echo after 150+100*4 = 550 ms at 2600-250*4 = 1600 Hz");
     CHECK(scout_found_n == 1 && rbit(scout_fog, 6, 1), "sonar does not reveal anything");
     run_ms(190);
@@ -263,10 +263,10 @@ int main(void)
     dump_oled("1_standby");
     run_ms(1000); type("PING\r"); run_ms(1000); type("PING\r"); run_ms(1000);
     clear_out(); type("PING\r");
-    CHECK(pings_left == 0 && strstr(out, "[EVT] Sonar: no pings left in this area"), "only 3 pings per area");
+    CHECK(pings_left == 0 && strstr(out, "[EVT] No pings left"), "only 3 pings per area");
     for (int i = 0; i < 3; i++) fw_tap(FIVEWAY_IDX_RIGHT);
     for (int i = 0; i < 3; i++) fw_tap(FIVEWAY_IDX_UP);
-    CHECK(scout_x == 6 && scout_y == 2 && strstr(out, "nest found at (6,1) (2/3)"), "5-way flies the scout to the second nest");
+    CHECK(scout_x == 6 && scout_y == 2 && strstr(out, "Nest found (2/3)") && rbit(scout_found, 6, 1), "5-way flies the scout to the second nest");
     CHECK(score == 40, "second nest: score 40");
     run_ms(130);
     {
@@ -277,15 +277,15 @@ int main(void)
     }
     run_ms(150);
     CHECK(oled_has(1, "NESTS 2/3") && oled_has(0, "BEST"), "OLED follows the map");
-    clear_out(); single();
-    CHECK(strstr(out, "area scanned") && strstr(out, "nests found 2/3") && strstr(out, "score 40"), "scout report shows scanned area, nests, score");
+    clear_out(); type("STATUS\r");
+    CHECK(strstr(out, "[STAT] STANDBY, alt +0.0 m, nests 2/3, pings 0/3, score 40, best 0\r\n") && count("[STAT]") == 1, "STATUS in STANDBY: one short line");
     pings_left = 2;
     for (int i = 0; i < 6; i++) fw_tap(FIVEWAY_IDX_LEFT);
     for (int i = 0; i < 2; i++) fw_tap(FIVEWAY_IDX_UP);
-    CHECK(scout_found_n == 3 && score == 40 + 20 + 30 + 2 * 20 && strstr(out, "all 3 nests located, +70 bonus (2 pings left)"),
+    CHECK(scout_found_n == 3 && score == 40 + 20 + 30 + 2 * 20 && strstr(out, "[EVT] All nests found, +70 bonus"),
           "all 3 found: +20, +30 bonus, +20 per unused ping");
     wave_start(1); service_isrs();
-    CHECK(map_count() == 13 && strstr(out, "[EVT] Wave 1 incoming: 3 outbreaks (3 scouted nests, bigger)"), "wave 1: scouted nests = plus of 5 (clipped at the corner)");
+    CHECK(map_count() == 13 && strstr(out, "[EVT] Wave 1: 3 outbreaks (3 scouted)"), "wave 1: scouted nests = plus of 5 (clipped at the corner)");
     CHECK(cell(3, 3) && cell(3, 5) && cell(2, 4) && cell(4, 4) && cell(0, 0) && cell(1, 0) && cell(0, 1), "cluster shapes in the battle map");
     map_live = false; memset(map_rows, 0, 8);
     scout_new();                                       /* back to a fresh area for the tests below */
@@ -297,9 +297,9 @@ int main(void)
     CHECK(sim_recover_pulses > 0 && !sim_i2c_busy, "5-way read times out with SDA held low -> bus recovered");
     CHECK(i2c1_present(0x3C) && i2c1_present(0x70) && fiveway_addr == 0x03, "after recovery all modules answer again");
     sim_fiveway_present = 0; clear_out(); run_ms(600);
-    CHECK(fiveway_addr == 0 && strstr(out, "[EVT] 5-way switch lost"), "unplugged 5-way detected");
+    CHECK(fiveway_addr == 0 && strstr(out, "[EVT] 5-way lost"), "unplugged 5-way detected");
     sim_fiveway_present = 1; clear_out(); run_ms(2100);
-    CHECK(fiveway_addr == 0x03 && strstr(out, "[EVT] 5-way switch connected at 0x03"), "re-plugged 5-way found again in STANDBY");
+    CHECK(fiveway_addr == 0x03 && strstr(out, "[EVT] 5-way connected"), "re-plugged 5-way found again in STANDBY");
     sim_oled_present = 0; oled_dirty = 0xFF; clear_out(); run_ms(300);
     CHECK(!oled_ok && strstr(out, "[EVT] OLED lost"), "unplugged OLED detected (no endless retries)");
     oled_ok = true; oled_dirty = 0xFF; oled_flush_all();
@@ -329,11 +329,13 @@ int main(void)
     clear_out(); btn_doubles = 2; run_ms(5);
     CHECK(state == ST_BATTLE && count("Entering BATTLE MODE") == 1 && !strstr(out, "Entering STANDBY"),
           "two queued doubles: only the first acts (stops at the mode change)");
-    CHECK(strstr(out, "[EVT] Unused sonar pings: +3/10 laser energy (0/10 -> 3/10)") && laser_energy == 3 && pings_left == 0,
+    CHECK(laser_energy == 3 && pings_left == 0,
           "unused pings become laser energy");
     laser_energy = 0;
-    CHECK(map_count() == 3 && wave_no == 1 && strstr(out, "[EVT] Wave 1 incoming: 3 outbreaks, spreading every 3.0 s"), "wave 1 without scouting: 3 single-cell nests");
-    CHECK(strstr(out, "[STAT] DRONE: #3, MODE: BATTLE, WAVE: 1") && strstr(out, "WEAPON: RULE 5/10"), "STAT on entering BATTLE");
+    CHECK(map_count() == 3 && wave_no == 1 && strstr(out, "[EVT] Wave 1: 3 outbreaks\r\n"), "wave 1 without scouting: 3 single-cell nests");
+    CHECK(!strstr(out, "[STAT]") && count("\r\n") == 2, "entering BATTLE: just the mode line and the wave line");
+    clear_out(); type("STATUS\r");
+    CHECK(strstr(out, "[STAT] BATTLE, wave 1, laser 0/10, rule 5/10, score 0, best 0\r\n") != NULL, "STATUS in BATTLE: one short line");
     CHECK(bb.count == 2 && bb.rec[0].type == BB_SORTIE && bb.rec[1].type == BB_WAVE, "black box restarted at sortie start");
     clear_out(); type("MUTE ON\r");
     CHECK(strstr(out, "ERR not allowed in BATTLE") && !cfg.muted, "config commands only in STANDBY");
@@ -359,47 +361,47 @@ int main(void)
     cell_set(7, 0);                                   /* keep the wave alive */
     aim_x = 3; aim_y = 3; t_spread = HAL_GetTick();
     clear_out(); single();
-    CHECK(strstr(out, "[EVT] LASER charged: 0/10 -> 3/10") && laser_energy == 3, "rule mode: 0 -> 3");
+    CHECK(strstr(out, "[EVT] Laser charged: 0/10 -> 3/10") && laser_energy == 3, "rule mode: 0 -> 3");
     single();
-    CHECK(strstr(out, "LASER FIRED (5/10, BOOM) at (3,3): 9 cells cleared, +90 points (x1). Energy 6/10 -> 1/10") != NULL, "rule mode: auto-fire at 6, BOOM clears 3x3, +90");
+    CHECK(strstr(out, "[EVT] Laser fired: 9 down, +90 x1. Energy 6/10 -> 1/10\r\n") != NULL, "rule mode: auto-fire at 6, BOOM clears 3x3, +90");
     CHECK(!bz_playing(SND_HEART), "shot sound interrupts the heartbeat");
-    CHECK(!cooldown_active && zombies_down == 9, "rule mode: no cooldown, 9 zombies down");
+    CHECK(!cooldown_active && bb.cells == 9, "rule mode: no cooldown, 9 zombies down");
     run_ms(150);
     CHECK(oled_has(6, "HIT! 9 +90 x1") && oled_has(4, "90 x2") && oled_text_cache[4][0] == '\x01', "OLED event line + big score with next multiplier");
     dump_oled("2_battle");
 
     printf("== weapon power: 5-way centre hold ==\n");
     clear_out(); fw_hold(FIVEWAY_IDX_CENTER, 1100);
-    CHECK(strstr(out, "[EVT] Weapon: power 1/10 (PIU), cooldown 0 s") && weapon_sel && weapon_power() == 1, "centre hold: RULE -> 1/10");
+    CHECK(strstr(out, "[EVT] Weapon: power 1/10\r\n") && weapon_sel && weapon_power() == 1, "centre hold: RULE -> 1/10");
     CHECK(strstr(out, "Target locked") == NULL, "hold does not also lock");
-    CHECK(strstr(out, "FIRED (1/10, PIU)") && laser_energy == 0, "power change auto-fires the stored 1/10");
+    CHECK(strstr(out, "Laser fired") && laser_energy == 0, "power change auto-fires the stored 1/10");
     memset(map_rows, 0, 8); cell_set(3, 3); cell_set(4, 3); cell_set(0, 7);
     aim_x = 3; aim_y = 3;
     clear_out(); single();
-    CHECK(strstr(out, "LASER FIRED (1/10, PIU) at (3,3): 1 cell cleared, +10 points (x1). Energy 3/10 -> 2/10") && !cooldown_active, "p=1: single cell, no cooldown (miss before reset the streak)");
+    CHECK(strstr(out, "Laser fired: 1 down, +10 x1. Energy 3/10 -> 2/10") && !cooldown_active, "p=1: single cell, no cooldown (miss before reset the streak)");
     fw_tap(FIVEWAY_IDX_RIGHT);
     CHECK(aim_x == 4 && aim_y == 3, "5-way right moves the crosshair");
     clear_out(); single();
-    CHECK(strstr(out, "(1/10, PIU) at (4,3): 1 cell cleared, +20 points (x2)") && strstr(out, "Energy 5/10 -> 4/10"), "p=1 fires every press, leftover kept, streak x2");
+    CHECK(strstr(out, "Laser fired: 1 down, +20 x2. Energy 5/10 -> 4/10"), "p=1 fires every press, leftover kept, streak x2");
     weapon_p = 2;                                     /* skip 2/10 (it would fire the 4/10 stored) */
     clear_out(); fw_hold(FIVEWAY_IDX_CENTER, 1100);
-    CHECK(weapon_power() == 3 && strstr(out, "power 3/10 (PEW), cooldown 3 s"), "hold again: 2 -> 3");
-    CHECK(strstr(out, "FIRED (3/10, PEW)") && cooldown_active && laser_energy == 1, "power change auto-fires when energy is enough");
+    CHECK(weapon_power() == 3 && strstr(out, "[EVT] Weapon: power 3/10\r\n"), "hold again: 2 -> 3");
+    CHECK(strstr(out, "Laser fired") && cooldown_active && laser_energy == 1, "power change auto-fires when energy is enough");
     memset(map_rows, 0, 8);
     for (int x = 2; x <= 6; x++) cell_set(x, 3);
     cell_set(4, 2); cell_set(4, 4); cell_set(3, 2); cell_set(0, 7);
     aim_x = 4; aim_y = 3;
     clear_out(); single();
-    CHECK(strstr(out, "FIRED") == NULL && strstr(out, "charged: 1/10 -> 4/10"), "during cooldown: charge only");
+    CHECK(strstr(out, "fired") == NULL && strstr(out, "charged: 1/10 -> 4/10"), "during cooldown: charge only");
     run_ms(150);
     CHECK(oled_has(3, "COOL"), "OLED shows the cooldown");
     clear_out(); run_ms(3100);
-    CHECK(strstr(out, "[EVT] Laser ready") && strstr(out, "FIRED (3/10, PEW) at (4,3): 5 cells cleared"), "cooldown ends -> ready + auto-fire, plus-shaped blast");
+    CHECK(strstr(out, "[EVT] Laser ready") && strstr(out, "Laser fired: 5 down"), "cooldown ends -> ready + auto-fire, plus-shaped blast");
     laser_energy = 0;
     clear_out(); fw_hold(FIVEWAY_IDX_CENTER, 1100); fw_hold(FIVEWAY_IDX_CENTER, 1100);
-    CHECK(strstr(out, "power 4/10 (BOOM)") && strstr(out, "power 5/10 (BOOM)"), "hold: 3 -> 4 -> 5");
+    CHECK(strstr(out, "power 4/10") && strstr(out, "power 5/10"), "hold: 3 -> 4 -> 5");
     clear_out(); fw_hold(FIVEWAY_IDX_CENTER, 1100);
-    CHECK(strstr(out, "[EVT] Weapon: rule mode 5/10, no cooldown") && !weapon_sel && !cooldown_active, "hold after 5 -> RULE");
+    CHECK(strstr(out, "[EVT] Weapon: rule mode 5/10\r\n") && !weapon_sel && !cooldown_active, "hold after 5 -> RULE");
 
     printf("== crosshair, lock, commands in BATTLE ==\n");
     memset(map_rows, 0, 8); cell_set(6, 1); cell_set(0, 7);
@@ -407,7 +409,7 @@ int main(void)
     for (int i = 0; i < 3; i++) fw_tap(FIVEWAY_IDX_RIGHT);
     CHECK(aim_x == 7, "crosshair stops at the edge");
     clear_out(); fw_tap(FIVEWAY_IDX_CENTER);
-    CHECK(strstr(out, "[EVT] Target locked at (6,1)") && aim_x == 6 && aim_y == 1, "centre tap locks the nearest target");
+    CHECK(aim_x == 6 && aim_y == 1 && !strstr(out, "[EVT]"), "centre tap locks the nearest target");
     clear_out(); type("AIM 1 0\r"); type("LOCK\r"); type("POWER 3\r"); type("HOME\r");
     CHECK(count("ERR unknown command") == 4, "AIM/LOCK/POWER/HOME commands are gone");
     clear_out(); type("RESCUE\r");
@@ -422,24 +424,24 @@ int main(void)
         memset(map_rows, 0, 8); cell_set(1, 6); cell_set(7, 0);
         aim_x = 0; aim_y = 7; laser_energy = 4;
         clear_out(); single();
-        CHECK(strstr(out, "FIRED (5/10, BOOM) at (1,6)") != NULL, "no aiming device: crosshair jumps to nearest target before firing");
+        CHECK(strstr(out, "Laser fired: 1 down") && aim_x == 1 && aim_y == 6, "no aiming device: crosshair jumps to nearest target before firing");
         fiveway_addr = keep;
     }
 
     printf("== waves ==\n");
     memset(map_rows, 0, 8); cell_set(2, 2); aim_x = 2; aim_y = 2; laser_energy = 4; t_spread = HAL_GetTick();
     clear_out(); single();
-    CHECK(strstr(out, "FIRED (5/10, BOOM) at (2,2): 1 cell cleared") != NULL, "last cell destroyed");
+    CHECK(strstr(out, "Laser fired: 1 down") != NULL, "last cell destroyed");
     run_ms(20);
-    CHECK(!wave_active && strstr(out, "[EVT] Wave 1 cleared! AREA CLEARED") && bb.waves == 1, "AREA CLEARED");
+    CHECK(!wave_active && strstr(out, "[EVT] Wave 1 cleared, +50") && bb.waves == 1, "AREA CLEARED");
     run_ms(400);
     CHECK(memcmp(mx_shown, GL_CHECK, 8) == 0 && oled_has(0, "WAVE 1     CLEARED!"), "matrix check mark + OLED during the pause");
     laser_energy = 4; clear_out(); single();
-    CHECK(strstr(out, "charged: 4/10 -> 7/10") && !strstr(out, "FIRED") && laser_energy == 7, "no shot into an empty map during the pause");
+    CHECK(strstr(out, "charged: 4/10 -> 7/10") && !strstr(out, "fired") && laser_energy == 7, "no shot into an empty map during the pause");
     clear_out(); run_ms(2000);
     CHECK(wave_active && wave_no == 2 && spread_ms == 2750 &&
-          strstr(out, "[EVT] Wave 2 incoming: 4 outbreaks, spreading every 2.7 s"), "wave 2: 4 outbreaks, faster spread");
-    CHECK(strstr(out, "FIRED (5/10, BOOM)") && laser_energy == 2, "stored energy fires as soon as the next wave appears");
+          strstr(out, "[EVT] Wave 2: 4 outbreaks"), "wave 2: 4 outbreaks, faster spread");
+    CHECK(strstr(out, "Laser fired") && laser_energy == 2, "stored energy fires as soon as the next wave appears");
 
     printf("== BATTLE: spread, overrun ==\n");
     memset(map_rows, 0, 8); cell_set(1, 1); t_spread = HAL_GetTick();
@@ -469,14 +471,14 @@ int main(void)
     clear_out(); fw_hold(FIVEWAY_IDX_CENTER, 1100); type("CHARGE\r");
     CHECK(strstr(out, "Weapon") == NULL && strstr(out, "ERR not allowed in ATTACKED"), "5-way and CHARGE ignored while attacked");
     clear_out(); type("RESCUE\r");
-    CHECK(state == ST_BATTLE && strstr(out, "Drone #3 rescued!") && map_count() == cells_before, "RESCUE command rescues, map kept");
+    CHECK(state == ST_BATTLE && strstr(out, "[EVT] Rescued! Back to BATTLE") && !strstr(out, "[STAT]") && map_count() == cells_before, "RESCUE command rescues, map kept");
     run_ms(1000);
     CHECK(state == ST_BATTLE, "still upside down after rescue: not re-attacked");
     s_acc[2] = 1000; run_ms(300);
     s_acc[2] = -1000; run_ms(500);
     CHECK(state == ST_ATTACKED, "after flipping back, can be attacked again");
     clear_out(); dbl();
-    CHECK(state == ST_BATTLE && strstr(out, "rescued"), "double press rescues too");
+    CHECK(state == ST_BATTLE && strstr(out, "Rescued"), "double press rescues too");
     s_acc[2] = 1000; run_ms(300);
 
     printf("== back to STANDBY: score + BLACKBOX ==\n");
@@ -484,7 +486,7 @@ int main(void)
     clear_out(); dbl();
     {
         char want[64];
-        snprintf(want, sizeof want, "[EVT] NEW HIGH SCORE: %lu (was 0)", (unsigned long)sortie_score);
+        snprintf(want, sizeof want, "[EVT] NEW HIGH SCORE: %lu\r\n", (unsigned long)sortie_score);
         CHECK(sortie_score > 0 && strstr(out, "[EVT] Mission score:") && strstr(out, want) && cfg.hiscore == sortie_score && score == 0,
               "score settled on return: new high score, then reset for the new area");
         CHECK(bz_seq == SND_HISCORE, "high-score jingle");
