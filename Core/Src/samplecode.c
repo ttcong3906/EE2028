@@ -70,7 +70,7 @@ extern uint8_t SENSOR_IO_Read(uint8_t Addr, uint8_t Reg);
 #define FIVEWAY_POLL_MS         30U
 #define FIVEWAY_REPEAT_DELAY_MS 400U
 #define FIVEWAY_REPEAT_MS       150U
-#define FIVEWAY_HOLD_MS         1000U  /* centre held: lab register / weapon power */
+#define FIVEWAY_HOLD_MS         1000U  /* centre held: altitude zero / weapon power */
 #define I2C_TIMEOUT_MS          25U    /* Grove I2C transfers (5-way may stretch the clock) */
 #define MODULE_BOOT_MS          300U   /* let the 5-way's own MCU start before probing */
 #define MODULE_REPROBE_MS       2000U  /* STANDBY: look again for unplugged modules */
