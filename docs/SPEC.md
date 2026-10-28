@@ -103,7 +103,7 @@ Ký hiệu *(đề)* = yêu cầu bắt buộc của đề bài. **Drone không 
 | 6 cảm biến *(đề)* | Đọc mỗi 1 s, so ngưỡng (mục 13) | | `[TLM] T: … M: …` **đúng 6 trường**, hoặc `[WARN] …` *(đề)* |
 | LED2 *(đề)* | Sáng liên tục | | |
 | **Bản đồ trinh sát** | Lái drone qua sương mù, quét 3x3 (mục 7) | Matrix | `[EVT] Nest found (2/3)` |
-| **Sonar** (PB single) | Ping, nghe tiếng vọng (mục 7) | Vòng sóng trên matrix; ping + tiếng vọng; OLED `ECHO 3 NE` (chữ to) | `[EVT] Ping 1/3: echo 3 cells NE` |
+| **Sonar** (PB single) | Ping, nghe tiếng vọng (mục 7) | Vòng sóng trên matrix; ping + tiếng vọng; OLED `ECHO NE` (chữ to) | `[EVT] Ping 1/3: echo NE` |
 | **Tìm nơi ở** | Nhiệt độ 20–32 °C **và** độ ẩm 40–70 %RH liên tục 3 s (đề: humidity "used to find new human habitats") | Matrix: ngôi nhà 2 s; chuông | `[EVT] Habitat found (T 26.1 C, H 58 %RH)` |
 | 5-way 4 hướng | Lái drone trinh sát 1 ô (giữ thì đi liên tục) | | |
 | 5-way giữa **nhấn ngắn** | Ping sonar, giống single press | | |
@@ -118,7 +118,7 @@ Ký hiệu *(đề)* = yêu cầu bắt buộc của đề bài. **Drone không 
 STANDBY        BATTLE         ATTACKED              TERMINATED
 NESTS 1/3      WAVE 2         !! UNDER ATTACK !!    LOST
                (CLEARED!)       7 s
-ECHO 4 NE      ▮▮▮▮▮▮▯▯▯▯                           SCORE 230
+ECHO NE        ▮▮▮▮▮▮▯▯▯▯                           SCORE 230
                                 2x PRESS
 PINGS 2/3      230              TO RESCUE            BEST 520
 ```
@@ -146,7 +146,7 @@ PINGS 2/3      230              TO RESCUE            BEST 520
 1. Matrix vẽ **vòng sóng** lan ra từ drone (4 khung × 90 ms), buzzer kêu "ping".
 2. Sonar dò **ổ chưa tìm thấy gần nhất**. Khoảng cách `d` tính theo số ô đi chéo được (`max(|dx|, |dy|)`, 1–7), hướng làm tròn về 8 hướng (N là phía hàng 0).
 3. **Tiếng vọng** đến sau `150 + 100·d` ms, cao độ `2600 − 250·d` Hz: ổ càng gần thì vọng càng sớm và càng cao.
-4. Cùng lúc tiếng vọng, matrix lóe **một vạch từ drone theo hướng đó, dài `d` ô** trong 0.7 s; OLED báo `ECHO 3 NE`, UART báo `[EVT] Ping 1/3: echo 3 cells NE`.
+4. Cùng lúc tiếng vọng, matrix lóe **một vạch từ drone theo hướng đó, dài `d` ô** trong 0.7 s; OLED và UART chỉ báo **hướng** (`ECHO NE`, `[EVT] Ping 1/3: echo NE`); khoảng cách chỉ đoán qua tiếng vọng và độ dài vạch.
 5. Sonar **không mở ô nào**: muốn xác nhận phải lái drone tới.
 6. Hết ping: `[EVT] No pings left`, tiếng ù trầm. Đã tìm đủ 3 ổ: `no echo`.
 

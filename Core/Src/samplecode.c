@@ -1297,7 +1297,7 @@ static uint8_t  scout_found[8];          /* nests located */
 static int      scout_x = 3, scout_y = 7, scout_found_n = 0;
 static bool     scout_ready = false;
 static int      pings_left = SONAR_PINGS;
-static char     echo_short[10] = "-";       /* OLED: "4 NE" */
+static char     echo_short[10] = "-";       /* OLED: "NE" */
 
 /* Wave n: 2 + n outbreaks in the far half of the map, spreading faster each wave.
  * Wave 1 uses the scouted area: located nests are bigger (plus of 5 cells),
@@ -1499,9 +1499,8 @@ static void sonar_ping(void)
         uint16_t f = (uint16_t)(2600 - 250 * best);
         snd_echo[1] = (note_t){ 0, 0, (uint16_t)(sonar_echo_ms - 60U), 0 };
         snd_echo[2] = (note_t){ f, f, 90, 0 };                /* the echo */
-        snprintf(echo_short, sizeof(echo_short), "%d %s", best, dir8(bx, by));
-        uart_printf("[EVT] Ping %d/%d: echo %d cell%s %s\r\n", SONAR_PINGS - pings_left, SONAR_PINGS,
-                    best, best > 1 ? "s" : "", dir8(bx, by));
+        snprintf(echo_short, sizeof(echo_short), "%s", dir8(bx, by));   /* direction only */
+        uart_printf("[EVT] Ping %d/%d: echo %s\r\n", SONAR_PINGS - pings_left, SONAR_PINGS, dir8(bx, by));
         bz_fx(snd_echo, 3);
     }
 }

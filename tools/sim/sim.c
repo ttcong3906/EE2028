@@ -251,7 +251,7 @@ int main(void)
     printf("== sonar ==\n");
     run_ms(600);
     clear_out(); type("PING\r");
-    CHECK(strstr(out, "[EVT] Ping 1/3: echo 4 cells NE") && pings_left == 2, "PING: nearest unfound nest (6,1) is 4 cells NE");
+    CHECK(strstr(out, "[EVT] Ping 1/3: echo NE\r\n") && pings_left == 2, "PING: nearest unfound nest (6,1) is NE (no distance shown)");
     CHECK(snd_echo[1].ms == 490 && snd_echo[2].f0 == 1600 && bz_seq == snd_echo, "echo after 150+100*4 = 550 ms at 2600-250*4 = 1600 Hz");
     CHECK(scout_found_n == 1 && rbit(scout_fog, 6, 1), "sonar does not reveal anything");
     run_ms(190);
@@ -260,7 +260,7 @@ int main(void)
     CHECK((mx_shown[4] & (0x80u >> 4)) && (mx_shown[3] & (0x80u >> 5)) && (mx_shown[2] & (0x80u >> 6)) && (mx_shown[1] & (0x80u >> 7)),
           "matrix: echo ray 4 cells towards NE");
     run_ms(150);
-    CHECK(big_has(6, "PINGS 2/3") && big_has(3, "ECHO 4 NE"), "OLED: pings left + big echo direction");
+    CHECK(big_has(6, "PINGS 2/3") && big_has(3, "ECHO NE"), "OLED: pings left + big echo direction");
     dump_oled("1_standby");
     run_ms(1000); type("PING\r"); run_ms(1000); type("PING\r"); run_ms(1000);
     clear_out(); type("PING\r");
