@@ -88,9 +88,10 @@ Ký hiệu *(đề)* = yêu cầu bắt buộc của đề bài. **Drone không 
 | Bước | Làm gì | Matrix / OLED / buzzer | UART |
 |---|---|---|---|
 | 1 | Đọc cấu hình | | `=== Drone #3 online ===` (thêm `(muted)` nếu đang im lặng) |
-| 2 | Chờ 300 ms cho các module Grove khởi động, gỡ kẹt bus I2C nếu cần, dò module (5-way ở 25 kHz, kiểm tra mã ID) | | |
+| 2 | Trong super-loop (không dùng `HAL_Delay`): đọc áp suất 10 lần, mỗi 40 ms, để lấy `P0`; đồng thời chờ ≥ 300 ms cho các module Grove khởi động | | |
+| 2b | Gỡ kẹt bus I2C nếu cần, dò module (5-way ở 25 kHz, kiểm tra mã ID), bật ngắt nút và IMU | | |
 | 3 | Báo kết quả | OLED: trang **SYSTEM CHECK** 2.5 s (cảm biến, matrix, 5-way, hộp đen, kỷ lục) | `[EVT] Check: sensors OK, matrix OK, OLED OK, 5-way OK` |
-| 4 | Lưu `P0` (trung bình 10 lần đọc) làm mốc độ cao 0 m | | |
+| 4 | Lưu `P0` (trung bình 10 lần đọc ở bước 2) làm mốc độ cao 0 m | | |
 | 5 | Nếu flash còn hộp đen của lần bay trước | | `[EVT] Black box recovered (18 records), type BLACKBOX` |
 | 6 | Tạo khu vực trinh sát đầu tiên, vào STANDBY | Matrix: số hiệu 1 s; tiếng khởi động | `Entering STANDBY MODE` *(đề)* |
 
@@ -333,7 +334,16 @@ Lái, ngắm, khóa mục tiêu và đổi công suất chỉ làm bằng 5-way.
 
 ## 18. Kiến trúc, thời gian
 
-- Siêu vòng lặp không chặn, định thời bằng `HAL_GetTick()`. ISR chỉ ghi cờ hoặc dữ liệu (EXTI13 nút, EXTI11 IMU, USART1 RX/TX).
+- Siêu vòng lặp không chặn, định thời bằng `HAL_GetTick()`, **không có `HAL_Delay` ở bất cứ đâu** (kể cả lúc khởi động). ISR chỉ ghi cờ hoặc dữ liệu (EXTI13 nút, EXTI11 IMU, USART1 RX/TX).
+- **Ngắt và độ ưu tiên** (số nhỏ = ưu tiên cao):
+
+  | Ngắt | Nguồn | Ưu tiên | ISR làm gì |
+  |---|---|---|---|
+  | SysTick | Timer hệ thống 1 ms | 0 | `HAL_IncTick()` |
+  | EXTI15_10 | PC13 nút (EXTI13, cả hai sườn) và PD11 LSM6DSL INT1 (EXTI11, sườn lên) | 5 | Ghi thời điểm nhấn/nhả, đếm single/double; bật cờ `flip_irq` |
+  | USART1 | ST-LINK VCP, 115200 | 6 | Nhận 1 byte vào bộ đệm dòng; báo gửi xong để gửi đoạn kế |
+
+  SysTick cao nhất để `HAL_GetTick()` luôn đúng khi ISR khác ghi thời điểm. Nút và IMU cao hơn UART vì thời điểm nhấn quyết định single hay double, còn một byte UART chậm vài µs không sao. Nút và IMU dùng chung vector `EXTI15_10_IRQn`: `EXTI15_10_IRQHandler` gọi `HAL_GPIO_EXTI_IRQHandler` cho từng chân (xóa cờ pending), callback phân biệt bằng `GPIO_Pin`.
 - OLED dùng framebuffer: chữ được so với bản cũ, chỉ trang nào đổi mới được gửi, mỗi vòng lặp gửi tối đa một trang (128 byte ≈ 12 ms ở 100 kHz).
 - Module ngoài không có thì bỏ qua, phần *(đề)* vẫn chạy đúng. Ở STANDBY, module chưa thấy được dò lại mỗi 2 s (cắm sau vẫn nhận). 5-way hoặc OLED không trả lời 10 lần liên tiếp thì coi như đã rút. Màn hình cuối lúc tự hủy chỉ thử gửi một số lần giới hạn, nên thiếu OLED vẫn tự hủy bình thường.
 - Nếu nhiều lần bấm nút dồn lại trong một vòng lặp, chỉ xử lý đến lần đổi mode đầu tiên.

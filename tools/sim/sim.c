@@ -86,7 +86,8 @@ void HAL_PWR_EnterSTANDBYMode(void) { standby_entered = 1; longjmp(jmp_end, 1); 
 void NVIC_SystemReset(void) { reset_called = 1; longjmp(jmp_end, 2); }
 void HAL_SuspendTick(void) {}
 HAL_StatusTypeDef HAL_Init(void) { return HAL_OK; }
-void HAL_Delay(uint32_t ms) { (void)ms; }
+static int sim_delay_calls = 0;
+void HAL_Delay(uint32_t ms) { (void)ms; sim_delay_calls++; }
 void BSP_LED_Init(Led_TypeDef l) { (void)l; }
 void BSP_LED_On(Led_TypeDef l)  { (void)l; if (!led) led_toggles++; led = 1; }
 void BSP_LED_Off(Led_TypeDef l) { (void)l; if (led) led_toggles++; led = 0; }
@@ -197,6 +198,11 @@ int main(void)
     printf("== boot ==\n");
     cfg_load();
     app_init(); service_isrs();
+    CHECK(state == ST_STANDBY && !strstr(out, "Entering STANDBY") && !strstr(out, "[EVT] Check"), "app_init returns at once, boot continues in the loop");
+    run_ms(390);
+    CHECK(!booted && !strstr(out, "Entering STANDBY"), "still booting at 390 ms (10 pressure samples, 40 ms apart)");
+    run_ms(60);
+    CHECK(booted && strstr(out, "Entering STANDBY MODE"), "booted after ~400 ms");
     CHECK(!cfg.muted && cfg.hiscore == 0, "blank flash -> sound on, no high score");
     CHECK(strstr(out, "=== Drone #3 online ===\r\n") != NULL, "boot banner");
     CHECK(fiveway_addr == 0x03 && max_khz_fw == 25, "5-way found at 25 kHz with the real ID byte order");
@@ -517,6 +523,7 @@ int main(void)
     for (int i = 0; i < 30; i++) altitude_feed(1007.8f);
     CHECK(altitude_m() > 1.4f && altitude_m() < 1.9f, "0.2 hPa drop -> about +1.7 m");
 
+    CHECK(sim_delay_calls == 0, "HAL_Delay never called");
     printf("== no rescue -> TERMINATED (black box to flash) ==\n");
     single();
     clear_out(); s_acc[2] = -1000; run_ms(500);

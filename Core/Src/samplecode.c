@@ -2435,31 +2435,47 @@ static void UART1_Init(void)
 /* ============================================================================
  * 17. MAIN
  * ==========================================================================*/
+/* Power-on is split in two so that nothing ever calls HAL_Delay():
+ *  app_init()  on-chip hardware only (LED, UART, sensors, buzzer).
+ *  boot_step() runs from the super-loop for the first ~400 ms: it averages
+ *              10 pressure readings (one every 40 ms) for the altitude zero,
+ *              and waits MODULE_BOOT_MS for the Grove modules' own MCUs
+ *              before probing I2C. Then it enters STANDBY. */
+static bool     booted = false;
+static int      p0_n = 0;
+static float    p0_sum = 0.0f;
+static uint32_t t_p0 = 0;
+
 static void app_init(void)
 {
     boot_tick = HAL_GetTick();
+    t_p0 = boot_tick;
     BSP_LED_Init(LED2);
     UART1_Init();
     sensors_init();
-    uint32_t up = HAL_GetTick();                      /* Grove modules' own MCUs need to boot */
-    if (up < MODULE_BOOT_MS) HAL_Delay(MODULE_BOOT_MS - up);
+    buzzer_init();
+    uart_printf("\r\n=== Drone #%d online ===%s\r\n", DRONE_ID, cfg.muted ? " (muted)" : "");
+}
+
+static void boot_step(void)
+{
+    if (p0_n < 10 && elapsed(t_p0, 40)) {
+        t_p0 = HAL_GetTick();
+        p0_sum += BSP_PSENSOR_ReadPressure();
+        p0_n++;
+    }
+    if (p0_n < 10 || !elapsed(boot_tick, MODULE_BOOT_MS)) return;
+
     I2C1_Init();
     if (i2c1_ready && i2c1_bus_stuck()) i2c1_recover();   /* RESET does not reset the modules */
     mx_init();
     oled_init();
-    buzzer_init();
     fiveway_probe();
-    GPIO_IT_Init();
-
-    uart_printf("\r\n=== Drone #%d online ===%s\r\n", DRONE_ID, cfg.muted ? " (muted)" : "");
     uart_printf("[EVT] Check: sensors %s, matrix %s, OLED %s, 5-way %s\r\n",
                 sensors_ok ? "OK" : "FAIL", mx_ok ? "OK" : "MISSING", oled_ok ? "OK" : "MISSING",
                 fiveway_addr ? "OK" : "MISSING");
 
-    /* Altitude zero: average of 10 readings */
-    float sum = 0.0f;
-    for (int i = 0; i < 10; i++) { sum += BSP_PSENSOR_ReadPressure(); HAL_Delay(40); }
-    float p0 = sum / 10.0f;
+    float p0 = p0_sum / (float)p0_n;                       /* altitude zero */
     if (p0 < 300.0f || p0 > 1200.0f) p0 = 1013.25f;
     altitude_zero(p0);
 
@@ -2482,6 +2498,8 @@ static void app_init(void)
         if (rng_state == 0) rng_state = 0x2028EE28u;
     }
 
+    GPIO_IT_Init();                                      /* button + IMU interrupts from now on */
+    booted = true;
     bz_fx(SND(SND_BOOT));
     enter_standby();
 }
@@ -2490,6 +2508,8 @@ static void app_init(void)
 static void app_loop(void)
 {
     uint8_t singles, doubles;
+
+    if (!booted) { boot_step(); return; }
 
     uart_poll_commands();
 
