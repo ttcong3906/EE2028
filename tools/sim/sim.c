@@ -263,9 +263,17 @@ int main(void)
     run_ms(190);
     CHECK((mx_shown[2] & (0x80u >> 3)) && (mx_shown[5] & (0x80u >> 6)), "matrix: expanding ring around the scout");
     run_ms(400);
-    CHECK((mx_shown[4] & (0x80u >> 4)) && (mx_shown[3] & (0x80u >> 5)) && (mx_shown[2] & (0x80u >> 6)) && (mx_shown[1] & (0x80u >> 7)),
-          "matrix: echo ray 4 cells towards NE");
-    run_ms(150);
+    {
+        static const uint8_t ray_on[8] = {0x00, 0x01, 0x02, 0x04, 0x08, 0x10, 0x00, 0x00};   /* drone (3,5) + NE ray to the edge */
+        static const uint8_t ray_off[8] = {0x00, 0x00, 0x00, 0x00, 0x00, 0x10, 0x00, 0x00};
+        CHECK(memcmp(mx_shown, ray_on, 8) == 0, "matrix: echo = fog hidden, drone + ray towards NE");
+        run_ms(80);
+        CHECK(memcmp(mx_shown, ray_off, 8) == 0, "matrix: ray blinks (off phase shows only the drone)");
+        run_ms(80);
+        CHECK(memcmp(mx_shown, ray_on, 8) == 0, "matrix: ray back on");
+        run_ms(1500);
+        CHECK(!sonar_anim && popcount8(mx_shown) > 20, "after 1.5 s the fogged map is back");
+    }
     CHECK(big_has(6, "PINGS 2/3") && big_has(3, "ECHO NE"), "OLED: pings left + big echo direction");
     dump_oled("1_standby");
     run_ms(1000); type("PING\r"); run_ms(1000); type("PING\r"); run_ms(1000);
@@ -275,7 +283,7 @@ int main(void)
     for (int i = 0; i < 3; i++) fw_tap(FIVEWAY_IDX_UP);
     CHECK(scout_x == 6 && scout_y == 2 && strstr(out, "Nest found (2/3)") && rbit(scout_found, 6, 1), "5-way flies the scout to the second nest");
     CHECK(score == 40, "second nest: score 40");
-    run_ms(130);
+    run_ms(630);                                       /* last echo ray (up to 2.35 s) is over */
     {
         uint32_t now = HAL_GetTick();
         bool drone_lit = (mx_shown[2] & (0x80u >> 6)) != 0, fog_lit = (mx_shown[0] & (0x80u >> 7)) != 0;

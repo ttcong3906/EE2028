@@ -86,7 +86,8 @@ extern uint8_t SENSOR_IO_Read(uint8_t Addr, uint8_t Reg);
 #define SCOUT_NESTS             3      /* hidden nests per area = wave 1 outbreaks */
 #define SONAR_PINGS             3      /* sonar pings per area                 */
 #define SONAR_RING_MS           90U    /* ring animation: 4 frames             */
-#define SONAR_RAY_MS            700U   /* echo direction ray on the matrix     */
+#define SONAR_RAY_MS            1500U  /* echo: direction ray on a blank matrix */
+#define SONAR_RAY_BLINK_MS      80U    /* ray blinks fast (about 6 Hz)          */
 #define BEAT_SLOW_MS            1200U  /* heartbeat period, empty map          */
 #define BEAT_FAST_MS            350U   /* heartbeat period, map at 75 %        */
 #define BOOT_ID_MS              1000U
@@ -1667,11 +1668,15 @@ static void matrix_render(void)
                 for (int y = scout_y - r; y <= scout_y + r; y++) for (int x = scout_x - r; x <= scout_x + r; x++)
                     if (inside(x, y) && (abs(x - scout_x) == r || abs(y - scout_y) == r)) rset(rows, x, y);
             }
-            if (echo_d && t >= sonar_echo_ms && t < sonar_echo_ms + SONAR_RAY_MS) {   /* echo: ray towards the nest */
-                for (int k = 1; k <= echo_d; k++) {
-                    int x = scout_x + echo_ux * k, y = scout_y + echo_uy * k;
-                    if (inside(x, y)) rset(rows, x, y);
-                }
+            if (echo_d && t >= sonar_echo_ms && t < sonar_echo_ms + SONAR_RAY_MS) {
+                /* Echo: fog hidden so the ray stands out. Only the drone (steady)
+                 * and a fast-blinking ray from it to the map edge, towards the
+                 * nearest unfound nest. Direction only, like the OLED. */
+                memset(rows, 0, sizeof(rows));
+                rset(rows, scout_x, scout_y);
+                if ((((t - sonar_echo_ms) / SONAR_RAY_BLINK_MS) & 1U) == 0U)
+                    for (int x = scout_x + echo_ux, y = scout_y + echo_uy; inside(x, y); x += echo_ux, y += echo_uy)
+                        rset(rows, x, y);
             }
             if (t >= 4U * SONAR_RING_MS && t >= sonar_echo_ms + SONAR_RAY_MS) sonar_anim = false;
         }

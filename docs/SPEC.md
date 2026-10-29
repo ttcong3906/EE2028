@@ -147,7 +147,7 @@ PINGS 2/3      230              TO RESCUE            BEST 520
 1. Matrix vẽ **vòng sóng** lan ra từ drone (4 khung × 90 ms), buzzer kêu "ping".
 2. Sonar dò **ổ chưa tìm thấy gần nhất**. Khoảng cách `d` tính theo số ô đi chéo được (`max(|dx|, |dy|)`, 1–7), hướng làm tròn về 8 hướng (N là phía hàng 0).
 3. **Tiếng vọng** đến sau `150 + 100·d` ms, cao độ `2600 − 250·d` Hz: ổ càng gần thì vọng càng sớm và càng cao.
-4. Cùng lúc tiếng vọng, matrix lóe **một vạch từ drone theo hướng đó, dài `d` ô** trong 0.7 s; OLED và UART chỉ báo **hướng** (`ECHO NE`, `[EVT] Ping 1/3: echo NE`); khoảng cách chỉ đoán qua tiếng vọng và độ dài vạch.
+4. Cùng lúc tiếng vọng, matrix **tắt sương mù**, chỉ còn drone (sáng liên tục) và **một vạch từ drone tới mép bản đồ theo hướng đó, nháy nhanh** (80 ms sáng / 80 ms tắt) trong 1.5 s, rồi trở lại bản đồ. OLED và UART cũng chỉ báo **hướng** (`ECHO NE`, `[EVT] Ping 1/3: echo NE`); khoảng cách chỉ đoán được qua tiếng vọng.
 5. Sonar **không mở ô nào**: muốn xác nhận phải lái drone tới.
 6. Hết ping: `[EVT] No pings left`, tiếng ù trầm. Đã tìm đủ 3 ổ: `no echo`.
 
@@ -360,7 +360,7 @@ Lái, ngắm, khóa mục tiêu và đổi công suất chỉ làm bằng 5-way.
 | Giữ lật để xác nhận / cửa sổ cứu hộ | 300 ms / 10 s |
 | 5-way: đọc / giữ | 30 ms / 1 s |
 | OLED: vẽ lại | 100 ms |
-| Sonar: vòng sóng / tiếng vọng / vạch hướng | 4 × 90 ms / 150 + 100·d ms / 0.7 s |
+| Sonar: vòng sóng / tiếng vọng / vạch hướng | 4 × 90 ms / 150 + 100·d ms / 1.5 s, nháy 80 ms |
 | Nhịp tim | 1200 ms → 350 ms theo số ô nhiễm |
 | Lây nhiễm / nghỉ giữa hai đợt | 3 s → 1 s / 2 s |
 
