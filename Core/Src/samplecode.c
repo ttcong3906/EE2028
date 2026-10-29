@@ -258,7 +258,7 @@ static void uart_write(const char *s)
     }
 }
 
-static void uart_printf(const char *fmt, ...)
+static void uart_sendf(const char *fmt, ...)
 {
     char buf[240];
     va_list ap;
@@ -266,6 +266,18 @@ static void uart_printf(const char *fmt, ...)
     vsnprintf(buf, sizeof(buf), fmt, ap);
     va_end(ap);
     uart_write(buf);
+}
+
+/* Floats are formatted by hand, so the output never depends on the project's
+ * "use float with printf from newlib-nano" (-u _printf_float) linker option. */
+static char *fstr(char *buf, float v, int decimals, bool plus)
+{
+    int32_t scale = decimals >= 2 ? 100 : (decimals == 1 ? 10 : 1);
+    int32_t n = (int32_t)(fabsf(v) * (float)scale + 0.5f);
+    const char *sign = (v < 0.0f && n != 0) ? "-" : (plus ? "+" : "");
+    if (scale == 1) snprintf(buf, 16, "%s%ld", sign, (long)n);
+    else            snprintf(buf, 16, "%s%ld.%0*ld", sign, (long)(n / scale), decimals, (long)(n % scale));
+    return buf;
 }
 
 static void uart_flush(uint32_t timeout_ms)
@@ -1326,7 +1338,7 @@ static void wave_start(int n)
     t_spread = HAL_GetTick();
     char extra[24] = "";
     if (big) snprintf(extra, sizeof(extra), " (%d scouted)", big);
-    uart_printf("[EVT] Wave %d: %d outbreaks%s\r\n", n, seeds, extra);
+    uart_sendf("[EVT] Wave %d: %d outbreaks%s\r\n", n, seeds, extra);
     bb_log(BB_WAVE, n, seeds, big, 0);
 }
 
@@ -1401,11 +1413,11 @@ static void scout_scan(bool announce)
             scout_found_n++;
             if (announce) {
                 score += 20;
-                uart_printf("[EVT] Nest found (%d/%d)\r\n", scout_found_n, SCOUT_NESTS);
+                uart_sendf("[EVT] Nest found (%d/%d)\r\n", scout_found_n, SCOUT_NESTS);
                 if (scout_found_n == SCOUT_NESTS) {
                     uint32_t bonus = 30U + 20U * (uint32_t)pings_left;
                     score += bonus;
-                    uart_printf("[EVT] All nests found, +%lu bonus\r\n", (unsigned long)bonus);
+                    uart_sendf("[EVT] All nests found, +%lu bonus\r\n", (unsigned long)bonus);
                     bz_fx(SND(SND_VICTORY));
                 } else {
                     bz_fx(SND(SND_ALARM));
@@ -1480,7 +1492,7 @@ static void sonar_ping(void)
         echo_d = 0;
         sonar_echo_ms = 0;
         strcpy(echo_short, "NONE");
-        uart_printf("[EVT] Ping %d/%d: no echo\r\n", SONAR_PINGS - pings_left, SONAR_PINGS);
+        uart_sendf("[EVT] Ping %d/%d: no echo\r\n", SONAR_PINGS - pings_left, SONAR_PINGS);
         bz_fx(snd_echo, 1);
     } else {
         echo_d = best;
@@ -1491,7 +1503,7 @@ static void sonar_ping(void)
         snd_echo[1] = (note_t){ 0, 0, (uint16_t)(sonar_echo_ms - 60U), 0 };
         snd_echo[2] = (note_t){ f, f, 90, 0 };                /* the echo */
         snprintf(echo_short, sizeof(echo_short), "%s", dir8(bx, by));   /* direction only */
-        uart_printf("[EVT] Ping %d/%d: echo %s\r\n", SONAR_PINGS - pings_left, SONAR_PINGS, dir8(bx, by));
+        uart_sendf("[EVT] Ping %d/%d: echo %s\r\n", SONAR_PINGS - pings_left, SONAR_PINGS, dir8(bx, by));
         bz_fx(snd_echo, 3);
     }
 }
@@ -1734,6 +1746,7 @@ static void led_set(bool on)
 
 static void send_stat(void)
 {
+    char fa[16];
     char missing[32] = "";
     if (!mx_ok)        strcat(missing, " matrix");
     if (!oled_ok)      strcat(missing, " OLED");
@@ -1741,15 +1754,15 @@ static void send_stat(void)
     char tail[48] = "";
     if (missing[0]) snprintf(tail, sizeof(tail), ", missing:%s", missing);
     if (state == ST_STANDBY)
-        uart_printf("[STAT] STANDBY, alt %+.1f m, nests %d/%d, pings %d/%d, score %lu, best %lu%s\r\n",
-                    altitude_m(), scout_found_n, SCOUT_NESTS, pings_left, SONAR_PINGS,
+        uart_sendf("[STAT] STANDBY, alt %s m, nests %d/%d, pings %d/%d, score %lu, best %lu%s\r\n",
+                    fstr(fa, altitude_m(), 1, true), scout_found_n, SCOUT_NESTS, pings_left, SONAR_PINGS,
                     (unsigned long)score, (unsigned long)cfg.hiscore, tail);
     else if (state == ST_BATTLE)
-        uart_printf("[STAT] BATTLE, wave %d, laser %d/10, %s %d/10, score %lu, best %lu%s\r\n",
+        uart_sendf("[STAT] BATTLE, wave %d, laser %d/10, %s %d/10, score %lu, best %lu%s\r\n",
                     wave_no, laser_energy, weapon_sel ? "power" : "rule", weapon_power(),
                     (unsigned long)score, (unsigned long)cfg.hiscore, tail);
     else
-        uart_printf("[STAT] ATTACKED, rescue in %d s\r\n", rescue_secs_left());
+        uart_sendf("[STAT] ATTACKED, rescue in %d s\r\n", rescue_secs_left());
 }
 
 static void laser_try_fire(void);
@@ -1757,9 +1770,9 @@ static void laser_try_fire(void);
 /* --- Mission score: settled when the sortie ends (back to STANDBY or self-destruct) --- */
 static void score_finalize(bool play)
 {
-    uart_printf("[EVT] Mission score: %lu (best %lu)\r\n", (unsigned long)score, (unsigned long)cfg.hiscore);
+    uart_sendf("[EVT] Mission score: %lu (best %lu)\r\n", (unsigned long)score, (unsigned long)cfg.hiscore);
     if (score <= cfg.hiscore) return;
-    uart_printf("[EVT] NEW HIGH SCORE: %lu\r\n", (unsigned long)score);
+    uart_sendf("[EVT] NEW HIGH SCORE: %lu\r\n", (unsigned long)score);
     cfg.hiscore = score;
     cfg_save();
     if (play) bz_fx(SND(SND_HISCORE));
@@ -1823,7 +1836,7 @@ static void enter_attacked(float az)
     led_set(true);
     t_led = t_attack_start;
     bz_play(SND(SND_SOS), true);                        /* distress beacon, ignores MUTE */
-    uart_printf("[EVT] Drone #%d flipped! The Last of EE2028\r\n", DRONE_ID);
+    uart_sendf("[EVT] Drone #%d flipped! The Last of EE2028\r\n", DRONE_ID);
 }
 
 static void rescue(void)
@@ -1847,7 +1860,7 @@ static void terminate(void)
     state = ST_TERMINATED;
     bool saved = bb_flash_save();
     bz_stop();
-    uart_printf("[EVT] Drone #%d: no rescue. Black box %s. Self-destructing. Cutting all communication.\r\n",
+    uart_sendf("[EVT] Drone #%d: no rescue. Black box %s. Self-destructing. Cutting all communication.\r\n",
                 DRONE_ID, saved ? "saved" : "NOT saved");
     led_set(false);
     matrix_render();
@@ -1909,11 +1922,11 @@ static void laser_fire(void)
         uint32_t pts = 10U * (uint32_t)cleared * (uint32_t)mult;
         score += pts;
         streak++;
-        uart_printf("[EVT] Laser fired: %d down, +%lu x%d. Energy %d/10 -> %d/10\r\n",
+        uart_sendf("[EVT] Laser fired: %d down, +%lu x%d. Energy %d/10 -> %d/10\r\n",
                     cleared, (unsigned long)pts, mult, before, laser_energy);
     } else {
         streak = 0;
-        uart_printf("[EVT] Laser fired: missed. Energy %d/10 -> %d/10\r\n", before, laser_energy);
+        uart_sendf("[EVT] Laser fired: missed. Energy %d/10 -> %d/10\r\n", before, laser_energy);
     }
     bb_log(BB_FIRE, p, aim_x, aim_y, cleared);
 
@@ -1941,7 +1954,7 @@ static void laser_charge(void)
     int before = laser_energy;
     laser_energy += LASER_CHARGE_STEP;
     if (laser_energy > LASER_MAX) laser_energy = LASER_MAX;
-    uart_printf("[EVT] Laser charged: %d/10 -> %d/10\r\n", before, laser_energy);
+    uart_sendf("[EVT] Laser charged: %d/10 -> %d/10\r\n", before, laser_energy);
     bb_log(BB_CHARGE, before, laser_energy, 0, 0);
     if (laser_can_fire()) laser_fire();
     else bz_fx(SND(SND_CHARGE));
@@ -1955,7 +1968,7 @@ static void weapon_next(void)
     else                   weapon_sel = false;
     bool sel = weapon_sel;
     int  p   = weapon_p;
-    if (sel) uart_printf("[EVT] Weapon: power %d/10\r\n", p);
+    if (sel) uart_sendf("[EVT] Weapon: power %d/10\r\n", p);
     else     uart_write("[EVT] Weapon: rule mode 5/10\r\n");
     if (!sel) cooldown_active = false;
     bb_log(BB_WEAPON, sel, weapon_power(), 0, 0);
@@ -2073,7 +2086,8 @@ static void habitat_check(void)
         if (habitat_secs < 100) habitat_secs++;
         if (!habitat_found && habitat_secs >= HABITAT_HOLD_S) {
             habitat_found = true;
-            uart_printf("[EVT] Habitat found (T %.1f C, H %.0f %%RH)\r\n", sens.v[S_T], sens.v[S_H]);
+            char ft[16], fh[16];
+            uart_sendf("[EVT] Habitat found (T %s C, H %s %%RH)\r\n", fstr(ft, sens.v[S_T], 1, false), fstr(fh, sens.v[S_H], 0, false));
             show_icon(GL_HOUSE, HOUSE_ICON_MS);
             bz_fx(SND(SND_HABITAT));
         }
@@ -2095,16 +2109,20 @@ static void standby_tick(void)
         warn_mask = check_thresholds(&sens);
 
         if (warn_mask == 0) {
-            uart_printf("[TLM] T: %.2f C, P: %.2f hPa, H: %.2f %%RH, A: %.2f m/s^2, G: %.2f dps, M: %.2f uT\r\n",
-                        sens.v[S_T], sens.v[S_P], sens.v[S_H], sens.v[S_A], sens.v[S_G], sens.v[S_M]);
+            char f[S_COUNT][16];
+            uart_sendf("[TLM] T: %s C, P: %s hPa, H: %s %%RH, A: %s m/s^2, G: %s dps, M: %s uT\r\n",
+                       fstr(f[S_T], sens.v[S_T], 2, false), fstr(f[S_P], sens.v[S_P], 2, false),
+                       fstr(f[S_H], sens.v[S_H], 2, false), fstr(f[S_A], sens.v[S_A], 2, false),
+                       fstr(f[S_G], sens.v[S_G], 2, false), fstr(f[S_M], sens.v[S_M], 2, false));
         } else {
             for (int i = 0; i < S_COUNT; i++) {
+                char fv[16], fl[16];
                 if (warn_mask & (1UL << (2 * i + 1)))
-                    uart_printf("[WARN] %s: %.2f %s, exceeds threshold of %.2f %s\r\n",
-                                th[i].tag, sens.v[i], th[i].unit, th[i].high, th[i].unit);
+                    uart_sendf("[WARN] %s: %s %s, exceeds threshold of %s %s\r\n",
+                               th[i].tag, fstr(fv, sens.v[i], 2, false), th[i].unit, fstr(fl, th[i].high, 2, false), th[i].unit);
                 if (warn_mask & (1UL << (2 * i)))
-                    uart_printf("[WARN] %s: %.2f %s, below threshold of %.2f %s\r\n",
-                                th[i].tag, sens.v[i], th[i].unit, th[i].low, th[i].unit);
+                    uart_sendf("[WARN] %s: %s %s, below threshold of %s %s\r\n",
+                               th[i].tag, fstr(fv, sens.v[i], 2, false), th[i].unit, fstr(fl, th[i].low, 2, false), th[i].unit);
             }
         }
         habitat_check();
@@ -2139,7 +2157,7 @@ static void battle_tick(void)
         bb.waves++;
         bb_log(BB_WAVE_CLEAR, wave_no, bb.cells, 0, 0);
         score += 50U * (uint32_t)wave_no;
-        uart_printf("[EVT] Wave %d cleared, +%d\r\n", wave_no, 50 * wave_no);
+        uart_sendf("[EVT] Wave %d cleared, +%d\r\n", wave_no, 50 * wave_no);
         bz_fx(SND(SND_VICTORY));
     } else if (map_live && !wave_active && elapsed(wave_pause_t, WAVE_PAUSE_MS)) {
         wave_start(wave_no + 1);
@@ -2150,7 +2168,7 @@ static void battle_tick(void)
         int n = map_count();
         if (n >= MAP_OVERRUN_CELLS && !overrun_reported) {
             overrun_reported = true;
-            uart_printf("[EVT] AREA OVERRUN (%d/64)\r\n", n);
+            uart_sendf("[EVT] AREA OVERRUN (%d/64)\r\n", n);
             bb_log(BB_OVERRUN, n, 0, 0, 0);
         } else if (n < MAP_OVERRUN_CELLS) {
             overrun_reported = false;
@@ -2201,7 +2219,7 @@ static void attacked_tick(void)
     }
     if (elapsed(t_attack_msg, ATTACK_MSG_MS)) {
         t_attack_msg += ATTACK_MSG_MS;
-        uart_printf("[ATTACK] Drone #%d Was Attacked! Rescue in %d s\r\n", DRONE_ID, rescue_secs_left());
+        uart_sendf("[ATTACK] Drone #%d Was Attacked! Rescue in %d s\r\n", DRONE_ID, rescue_secs_left());
     }
 }
 
@@ -2221,21 +2239,21 @@ static void cmd_thresh(void)
 {
     for (int i = 0; i < S_COUNT; i++) {
         char lo[16] = "-", hi[16] = "-";
-        if (th[i].use_low)  snprintf(lo, sizeof(lo), "%.2f", th[i].low);
-        if (th[i].use_high) snprintf(hi, sizeof(hi), "%.2f", th[i].high);
-        uart_printf("[CMD] %s: low %s, high %s %s\r\n", th[i].tag, lo, hi, th[i].unit);
+        if (th[i].use_low)  fstr(lo, th[i].low, 2, false);
+        if (th[i].use_high) fstr(hi, th[i].high, 2, false);
+        uart_sendf("[CMD] %s: low %s, high %s %s\r\n", th[i].tag, lo, hi, th[i].unit);
     }
 }
 
 static void cmd_not_allowed(void)
 {
-    uart_printf("[CMD] ERR not allowed in %s\r\n", mode_name(state));
+    uart_sendf("[CMD] ERR not allowed in %s\r\n", mode_name(state));
 }
 
 static void cmd_cfg_saved(const char *what)
 {
     bool ok = cfg_save();
-    uart_printf("[CMD] OK %s (%s)\r\n", what, ok ? "saved" : "NOT saved");
+    uart_sendf("[CMD] OK %s (%s)\r\n", what, ok ? "saved" : "NOT saved");
 }
 
 static const char *bb_type_name(uint8_t t)
@@ -2260,8 +2278,8 @@ static const char *bb_type_name(uint8_t t)
 static void bb_print(const bb_image_t *img, const char *source)
 {
     if (img->count == 0) { uart_write("[BBOX] empty\r\n"); return; }
-    uart_printf("[BBOX] %s, drone #%d, %d records\r\n", source, img->drone_id, img->count);
-    uart_printf("[BBOX] LAST MISSION: waves cleared %u, shots fired %u, cells cleared %u, flight %u s, END: %s\r\n",
+    uart_sendf("[BBOX] %s, drone #%d, %d records\r\n", source, img->drone_id, img->count);
+    uart_sendf("[BBOX] LAST MISSION: waves cleared %u, shots fired %u, cells cleared %u, flight %u s, END: %s\r\n",
                 img->waves, img->shots, img->cells, img->flight_s, end_name(img->end_reason));
     uint8_t start = (uint8_t)((img->head + BB_SIZE - img->count) % BB_SIZE);
     for (uint8_t i = 0; i < img->count; i++) {
@@ -2279,7 +2297,7 @@ static void bb_print(const bb_image_t *img, const char *source)
             case BB_WAVE_CLEAR: snprintf(extra, sizeof(extra), " %d (%d cells so far)", r->a, r->b); break;
             default: break;
         }
-        uart_printf("[BBOX] t=%3lu.%lus %-9s %s%s\r\n", (unsigned long)(r->t / 1000U), (unsigned long)((r->t % 1000U) / 100U),
+        uart_sendf("[BBOX] t=%3lu.%lus %-9s %s%s\r\n", (unsigned long)(r->t / 1000U), (unsigned long)((r->t % 1000U) / 100U),
                     mode_name((sys_state_t)r->mode), bb_type_name(r->type), extra);
     }
 }
@@ -2288,7 +2306,7 @@ static bool parse_on_off(const char *verb, const char *arg, bool *on)
 {
     if (arg && !strcmp(arg, "ON"))  { *on = true;  return true; }
     if (arg && !strcmp(arg, "OFF")) { *on = false; return true; }
-    uart_printf("[CMD] ERR usage: %s ON | %s OFF\r\n", verb, verb);
+    uart_sendf("[CMD] ERR usage: %s ON | %s OFF\r\n", verb, verb);
     return false;
 }
 
@@ -2318,7 +2336,8 @@ static void cmd_exec(char *line)
                 if (!strcmp(us + 1, "LOW"))       { th[i].low  = val; th[i].use_low  = true; }
                 else if (!strcmp(us + 1, "HIGH")) { th[i].high = val; th[i].use_high = true; }
                 else break;
-                uart_printf("[CMD] OK %s_%s = %.2f %s\r\n", th[i].tag, us + 1, val, th[i].unit);
+                char fv[16];
+                uart_sendf("[CMD] OK %s_%s = %s %s\r\n", th[i].tag, us + 1, fstr(fv, val, 2, false), th[i].unit);
                 return;
             }
         }
@@ -2360,7 +2379,7 @@ static void cmd_exec(char *line)
         return;
     }
 
-    uart_printf("[CMD] ERR unknown command '%s' (type HELP)\r\n", verb);
+    uart_sendf("[CMD] ERR unknown command '%s' (type HELP)\r\n", verb);
 }
 
 /* The board echoes what is typed (turn OFF "Local echo" in TeraTerm). */
@@ -2451,7 +2470,7 @@ static void UART1_Init(void)
 /* ============================================================================
  * 17. MAIN
  * ==========================================================================*/
-/* Power-on is split in two so that nothing ever calls HAL_Delay():
+/* Power-on is split in two so that nothing ever blocks in a delay call:
  *  app_init()  on-chip hardware only (LED, UART, sensors, buzzer).
  *  boot_step() runs from the super-loop for the first ~400 ms: it averages
  *              10 pressure readings (one every 40 ms) for the altitude zero,
@@ -2470,7 +2489,7 @@ static void app_init(void)
     UART1_Init();
     sensors_init();
     buzzer_init();
-    uart_printf("\r\n=== Drone #%d online ===%s\r\n", DRONE_ID, cfg.muted ? " (muted)" : "");
+    uart_sendf("\r\n=== Drone #%d online ===%s\r\n", DRONE_ID, cfg.muted ? " (muted)" : "");
 }
 
 static void boot_step(void)
@@ -2487,7 +2506,7 @@ static void boot_step(void)
     mx_init();
     oled_init();
     fiveway_probe();
-    uart_printf("[EVT] Check: sensors %s, matrix %s, OLED %s, 5-way %s\r\n",
+    uart_sendf("[EVT] Check: sensors %s, matrix %s, OLED %s, 5-way %s\r\n",
                 sensors_ok ? "OK" : "FAIL", mx_ok ? "OK" : "MISSING", oled_ok ? "OK" : "MISSING",
                 fiveway_addr ? "OK" : "MISSING");
 
@@ -2499,7 +2518,7 @@ static void boot_step(void)
     bb_flash_check();
     if (bb_flash_valid) {
         const bb_image_t *f = bb_flash_image();
-        uart_printf("[EVT] Black box recovered (%d records), type BLACKBOX\r\n", f->count);
+        uart_sendf("[EVT] Black box recovered (%d records), type BLACKBOX\r\n", f->count);
     }
 
     /* Seed the map generator from sensor noise so every power-on is a new area. */

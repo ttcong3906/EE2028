@@ -214,6 +214,13 @@ int main(void)
     CHECK(memcmp(mx_shown, GL_DIGIT3, 8) == 0 && mx_shown[0] && mx_shown[7], "matrix shows drone number 3 at boot, all 8 rows");
     CHECK(big_has(0, "NESTS 0/3") && !oled_has(0, "SYSTEM CHECK"), "OLED goes straight to the STANDBY screen (no boot check page)");
     CHECK(strstr(out, "[TLM] T: 25.00 C, P: 1008.00 hPa, H: 60.00 %RH, A: 9.81 m/s^2, G: 1.00 dps, M: 41.23 uT\r\n") != NULL, "TLM has exactly 6 fields");
+    {
+        char b[16];
+        CHECK(!strcmp(fstr(b, -0.004f, 2, false), "0.00") && !strcmp(fstr(b, -1.55f, 1, true), "-1.6") &&
+              !strcmp(fstr(b, 0.0f, 1, true), "+0.0") && !strcmp(fstr(b, 1007.996f, 2, false), "1008.00") &&
+              !strcmp(fstr(b, 58.4f, 0, false), "58") && !strcmp(fstr(b, 9.807f, 2, false), "9.81"),
+              "floats formatted by hand (no -u _printf_float needed)");
+    }
     CHECK(strstr(out, "[HUD]") == NULL && strstr(out, "[MAP]") == NULL, "no dashboard lines any more");
 
     printf("== STANDBY scouting + OLED ==\n");
