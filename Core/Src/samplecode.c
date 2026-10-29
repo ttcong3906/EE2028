@@ -697,16 +697,6 @@ static void oled_line(uint8_t line, const char *text)
 #endif
 }
 
-static void oled_linef(uint8_t line, const char *fmt, ...)
-{
-    char buf[48];
-    va_list ap;
-    va_start(ap, fmt);
-    vsnprintf(buf, sizeof(buf), fmt, ap);
-    va_end(ap);
-    oled_line(line, buf);
-}
-
 /* 2x scaled text over two pages (12 px per character, 14 px tall, 1 px margin above and below). */
 static void oled_big(uint8_t page, uint8_t x, const char *text)
 {
