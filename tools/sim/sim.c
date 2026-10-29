@@ -457,6 +457,9 @@ int main(void)
     clear_out(); s_acc[2] = -1000; run_ms(500);
     CHECK(state == ST_ATTACKED && strstr(out, "[EVT] Drone #3 flipped! The Last of EE2028"), "flip -> ATTACKED");
     CHECK(bz_playing(SND_SOS), "SOS beacon playing");
+    run_ms(20);
+    CHECK((memcmp(mx_shown, GL_S, 8) == 0 || memcmp(mx_shown, GL_O, 8) == 0) && mx_shown[0] && mx_shown[7],
+          "matrix SOS letters use all 8 rows");
     CHECK(strstr(out, "[ATTACK] Drone #3 Was Attacked! Rescue in 10 s") != NULL, "attack message with drone id");
     run_ms(150);
     CHECK(oled_has(0, "!! UNDER ATTACK !!") && big_has(1, "10 s") && big_has(4, "2x PRESS") && big_has(6, "TO RESCUE"), "OLED: big countdown and big rescue hint");
