@@ -281,7 +281,7 @@ BATTLE không gửi telemetry định kỳ, chỉ gửi sự kiện.
 **ATTACKED:**
 - LED2 nháy 2 Hz *(đề)*. Khi vào: `[EVT] Drone #3 flipped! The Last of EE2028`. Mỗi 1 s: `[ATTACK] Drone #3 Was Attacked! Rescue in 7 s` *(đề)*.
 - Buzzer phát **Morse SOS** liên tục, kêu cả khi im lặng. Matrix hiện chữ S-O-S theo nhịp.
-- OLED: `UNDER ATTACK` (cao 12 px), **số giây còn lại** to nhất (18 px), `2x PRESS / TO RESCUE` (12 px). Màn này vẽ chữ theo cỡ tùy ý (phóng font 5x7 kiểu nearest-neighbour) vì cỡ 2x không đủ chỗ cho 12 ký tự.
+- OLED: `UNDER ATTACK` và `2x PRESS / TO RESCUE` cỡ vừa 7x10 px, **số giây còn lại** cỡ 2x (10x14 px). Cỡ vừa là font 5x7 nhân đôi cột ngoài (0, 4) và hàng trên, giữa, dưới (0, 3, 6), nên nét chữ đều và đối xứng, không bị mất điểm như khi phóng theo tỉ lệ lẻ; 2x không đủ chỗ cho 12 ký tự.
 - **Được cứu** khi double press *(đề)* hoặc lệnh `RESCUE`. Báo `[EVT] Rescued! Back to BATTLE`, về BATTLE. Matrix mặt cười 1 s, ba nốt đi lên.
 - Single press và 5-way bị bỏ qua.
 

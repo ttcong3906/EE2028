@@ -480,7 +480,7 @@ int main(void)
         int top = 0, bot = 0;                          /* header occupies pixel rows 0..11 */
         for (int x = 0; x < 128; x++) { top |= oled_fb[0][x] & 0x03; bot |= oled_fb[1][x] & 0x0C; }
         uint8_t cd[3][128]; memcpy(cd, &oled_fb[2], sizeof cd);
-        CHECK(top && bot && oled_text_cache[0][0] == '\x04', "OLED: UNDER ATTACK header 12 px tall");
+        CHECK(top && bot && oled_text_cache[0][0] == '\x04', "OLED: UNDER ATTACK header in 7x10 text");
         run_ms(1000); run_ms(150);
         CHECK(memcmp(cd, &oled_fb[2], sizeof cd) != 0 && memcmp(oled_fb[5], oled_fb[6], 128) != 0, "OLED: countdown ticks, rescue hint drawn");
     }

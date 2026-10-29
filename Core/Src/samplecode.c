@@ -1581,13 +1581,21 @@ static void hud_battle(void)
     oled_big_c(6, t);
 }
 
-/* Free-size text for screens that need sizes between 1x and 2x: the 5x7 font
- * is scaled to gw x h pixels (nearest neighbour) at any pixel row y0, centred,
- * into a scratch screen that oled_commit() then compares page by page. */
+/* Text sizes for the ATTACKED screen, drawn at any pixel row into a scratch
+ * screen that oled_commit() compares page by page.
+ *  MID: 7x10 px. The 5x7 font with its outer columns (0, 4) and its top,
+ *       middle and bottom rows (0, 3, 6) doubled, so every letter keeps
+ *       symmetric strokes (no thin/thick pixels from uneven scaling).
+ *  BIG: 10x14 px, plain 2x. */
+#define TXT_MID 1
+#define TXT_BIG 2
 static uint8_t scr[OLED_LINES][128];
+static const uint8_t MID_COL[7]  = {0, 0, 1, 2, 3, 4, 4};
+static const uint8_t MID_ROW[10] = {0, 0, 1, 2, 3, 3, 4, 5, 6, 6};
 
-static void scr_text(int y0, int h, int gw, const char *text)
+static void scr_text(int y0, int size, const char *text)
 {
+    int gw = size == TXT_BIG ? 10 : 7, h = size == TXT_BIG ? 14 : 10;
     int n = (int)strlen(text), pitch = gw + 2, x0 = (128 - (n * pitch - 2)) / 2;
     if (x0 < 0) x0 = 0;
     for (int i = 0; i < n; i++) {
@@ -1595,8 +1603,9 @@ static void scr_text(int y0, int h, int gw, const char *text)
         const uint8_t *g = font5x7[ch - 32];
         for (int x = 0; x < gw; x++) for (int y = 0; y < h; y++) {
             int px = x0 + i * pitch + x, py = y0 + y;
-            if (px < 0 || px > 127 || py < 0 || py > 63) continue;
-            if (g[x * 5 / gw] & (1U << (y * 7 / h))) scr[py / 8][px] |= (uint8_t)(1U << (py % 8));
+            int c = size == TXT_BIG ? x / 2 : MID_COL[x], r = size == TXT_BIG ? y / 2 : MID_ROW[y];
+            if (px > 127 || py > 63) continue;
+            if (g[c] & (1U << r)) scr[py / 8][px] |= (uint8_t)(1U << (py % 8));
         }
     }
 }
@@ -1613,17 +1622,16 @@ static void oled_commit(void)
 #endif
 }
 
-/* ATTACKED: everything readable at arm's length. Header 12 px, countdown
- * 18 px (the number that matters), rescue hint 12 px on two lines. */
+/* ATTACKED: header and rescue hint 7x10, countdown 2x (10x14). */
 static void hud_attacked(void)
 {
     char t[8];
     snprintf(t, sizeof(t), "%d s", rescue_secs_left());
     memset(scr, 0, sizeof(scr));
-    scr_text(0, 12, 8, "UNDER ATTACK");
-    scr_text(15, 18, 12, t);
-    scr_text(36, 12, 8, "2x PRESS");
-    scr_text(52, 12, 8, "TO RESCUE");
+    scr_text(1, TXT_MID, "UNDER ATTACK");
+    scr_text(17, TXT_BIG, t);
+    scr_text(38, TXT_MID, "2x PRESS");
+    scr_text(53, TXT_MID, "TO RESCUE");
     oled_commit();
 }
 
