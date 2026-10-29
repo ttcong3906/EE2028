@@ -212,13 +212,13 @@ int main(void)
     CHECK(strstr(out, "Entering STANDBY MODE") != NULL, "Entering STANDBY MODE");
     run_ms(150);
     CHECK(memcmp(mx_shown, GL_DIGIT3, 8) == 0 && mx_shown[0] && mx_shown[7], "matrix shows drone number 3 at boot, all 8 rows");
-    CHECK(oled_has(0, "== SYSTEM CHECK ==") && oled_has(3, "5-WAY        OK") && oled_has(4, "BEST SCORE   0"), "OLED boot self-test page");
+    CHECK(big_has(0, "NESTS 0/3") && !oled_has(0, "SYSTEM CHECK"), "OLED goes straight to the STANDBY screen (no boot check page)");
     CHECK(strstr(out, "[TLM] T: 25.00 C, P: 1008.00 hPa, H: 60.00 %RH, A: 9.81 m/s^2, G: 1.00 dps, M: 41.23 uT\r\n") != NULL, "TLM has exactly 6 fields");
     CHECK(strstr(out, "[HUD]") == NULL && strstr(out, "[MAP]") == NULL, "no dashboard lines any more");
 
     printf("== STANDBY scouting + OLED ==\n");
     clear_out(); run_ms(3100);
-    CHECK(big_has(0, "NESTS 0/3") && big_has(3, "ECHO -") && big_has(6, "PINGS 3/3"), "after 2.5 s: STANDBY = NESTS, ECHO, PINGS in big text");
+    CHECK(big_has(0, "NESTS 0/3") && big_has(3, "ECHO -") && big_has(6, "PINGS 3/3"), "STANDBY = NESTS, ECHO, PINGS in big text");
     CHECK(blank(2) && blank(5), "empty page between the big lines");
     CHECK(strstr(out, "[EVT] Habitat found (T 25.0 C, H 60 %RH)") != NULL && habitat_found, "habitat after 3 s of T 20-32 C and H 40-70 %RH");
     run_ms(200);

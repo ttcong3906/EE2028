@@ -93,7 +93,6 @@ extern uint8_t SENSOR_IO_Read(uint8_t Addr, uint8_t Reg);
 #define BOOT_ID_MS              1000U
 #define BEAM_FRAME_MS           50U
 #define BLAST_FLASH_MS          150U
-#define BOOT_CHECK_MS           2500U  /* OLED system-check page at power-on    */
 #define OLED_REFRESH_MS         100U
 
 /* --- Physics / thresholds --- */
@@ -1531,18 +1530,6 @@ static int rescue_secs_left(void)
 /* --- OLED content ------------------------------------------------------- */
 static uint32_t t_oled = 0;
 
-static void hud_boot_check(void)
-{
-    oled_line(0, "== SYSTEM CHECK ==");
-    oled_linef(1, "SENSORS      %s", sensors_ok ? "OK" : "FAIL");
-    oled_linef(2, "LED MATRIX   %s", mx_ok ? "OK" : "NOT FOUND");
-    oled_linef(3, "5-WAY        %s", fiveway_addr ? "OK" : "NOT FOUND");
-    oled_linef(4, "BEST SCORE   %lu", (unsigned long)cfg.hiscore);
-    oled_linef(5, "BLACK BOX    %s", bb_flash_valid ? "FOUND" : "EMPTY");
-    oled_line(6, "");
-    oled_linef(7, "DRONE #%d  STARTING", DRONE_ID);
-}
-
 /* The OLED is tiny (0.96", 128x64): small 6x8 text is unreadable at arm's
  * length, so each mode shows only 2-3 items in 2x text (10 chars per line),
  * with an empty page between them. Everything else is on the UART. */
@@ -1556,7 +1543,6 @@ static void oled_big_c(uint8_t page, const char *text)
 
 static void hud_standby(void)
 {
-    if (!elapsed(boot_tick, BOOT_CHECK_MS)) { hud_boot_check(); return; }
     char t[24];
     snprintf(t, sizeof(t), "NESTS %d/%d", scout_found_n, SCOUT_NESTS);
     oled_big_c(0, t);

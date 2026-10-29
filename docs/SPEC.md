@@ -90,7 +90,7 @@ Ký hiệu *(đề)* = yêu cầu bắt buộc của đề bài. **Drone không 
 | 1 | Đọc cấu hình | | `=== Drone #3 online ===` (thêm `(muted)` nếu đang im lặng) |
 | 2 | Trong super-loop (không dùng `HAL_Delay`): đọc áp suất 10 lần, mỗi 40 ms, để lấy `P0`; đồng thời chờ ≥ 300 ms cho các module Grove khởi động | | |
 | 2b | Gỡ kẹt bus I2C nếu cần, dò module (5-way ở 25 kHz, kiểm tra mã ID), bật ngắt nút và IMU | | |
-| 3 | Báo kết quả | OLED: trang **SYSTEM CHECK** 2.5 s (cảm biến, matrix, 5-way, hộp đen, kỷ lục) | `[EVT] Check: sensors OK, matrix OK, OLED OK, 5-way OK` |
+| 3 | Báo kết quả (chỉ trên UART, OLED vào thẳng màn STANDBY) | | `[EVT] Check: sensors OK, matrix OK, OLED OK, 5-way OK` |
 | 4 | Lưu `P0` (trung bình 10 lần đọc ở bước 2) làm mốc độ cao 0 m | | |
 | 5 | Nếu flash còn hộp đen của lần bay trước | | `[EVT] Black box recovered (18 records), type BLACKBOX` |
 | 6 | Tạo khu vực trinh sát đầu tiên, vào STANDBY | Matrix: số hiệu 1 s; tiếng khởi động | `Entering STANDBY MODE` *(đề)* |
@@ -124,7 +124,7 @@ ECHO NE        ▮▮▮▮▮▮▯▯▯▯                           SCORE 23
 PINGS 2/3      230              TO RESCUE            BEST 520
 ```
 
-- Lúc khởi động có trang **SYSTEM CHECK** 2.5 s (chữ nhỏ).
+- Không có trang khởi động: OLED vào thẳng màn STANDBY, tình trạng module xem ở dòng `[EVT] Check` trên UART.
 
 ---
 
