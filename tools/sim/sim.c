@@ -205,7 +205,7 @@ int main(void)
     CHECK(p0_hpa == 1008.0f && !strstr(out, "Altitude"), "altitude zero at boot, silently");
     CHECK(strstr(out, "Entering STANDBY MODE") != NULL, "Entering STANDBY MODE");
     run_ms(150);
-    CHECK(memcmp(mx_shown, GL_DIGIT3, 8) == 0, "matrix shows drone number 3 at boot");
+    CHECK(memcmp(mx_shown, GL_DIGIT3, 8) == 0 && mx_shown[0] && mx_shown[7], "matrix shows drone number 3 at boot, all 8 rows");
     CHECK(oled_has(0, "== SYSTEM CHECK ==") && oled_has(3, "5-WAY        OK") && oled_has(4, "BEST SCORE   0"), "OLED boot self-test page");
     CHECK(strstr(out, "[TLM] T: 25.00 C, P: 1008.00 hPa, H: 60.00 %RH, A: 9.81 m/s^2, G: 1.00 dps, M: 41.23 uT\r\n") != NULL, "TLM has exactly 6 fields");
     CHECK(strstr(out, "[HUD]") == NULL && strstr(out, "[MAP]") == NULL, "no dashboard lines any more");
