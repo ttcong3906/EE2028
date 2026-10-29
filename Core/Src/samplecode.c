@@ -1554,14 +1554,6 @@ static void oled_big_c(uint8_t page, const char *text)
     oled_big(page, (uint8_t)(w < 128 ? (128 - w) / 2 : 0), text);
 }
 
-static void oled_line_c(uint8_t line, const char *text)
-{
-    char buf[OLED_COLS + 1];
-    int n = (int)strlen(text), pad = n < OLED_COLS ? (OLED_COLS - n) / 2 : 0;
-    snprintf(buf, sizeof(buf), "%*s%s", pad, "", text);
-    oled_line(line, buf);
-}
-
 static void hud_standby(void)
 {
     if (!elapsed(boot_tick, BOOT_CHECK_MS)) { hud_boot_check(); return; }
@@ -1589,15 +1581,50 @@ static void hud_battle(void)
     oled_big_c(6, t);
 }
 
+/* Free-size text for screens that need sizes between 1x and 2x: the 5x7 font
+ * is scaled to gw x h pixels (nearest neighbour) at any pixel row y0, centred,
+ * into a scratch screen that oled_commit() then compares page by page. */
+static uint8_t scr[OLED_LINES][128];
+
+static void scr_text(int y0, int h, int gw, const char *text)
+{
+    int n = (int)strlen(text), pitch = gw + 2, x0 = (128 - (n * pitch - 2)) / 2;
+    if (x0 < 0) x0 = 0;
+    for (int i = 0; i < n; i++) {
+        char ch = (text[i] < 32 || text[i] > 126) ? ' ' : text[i];
+        const uint8_t *g = font5x7[ch - 32];
+        for (int x = 0; x < gw; x++) for (int y = 0; y < h; y++) {
+            int px = x0 + i * pitch + x, py = y0 + y;
+            if (px < 0 || px > 127 || py < 0 || py > 63) continue;
+            if (g[x * 5 / gw] & (1U << (y * 7 / h))) scr[py / 8][px] |= (uint8_t)(1U << (py % 8));
+        }
+    }
+}
+
+static void oled_commit(void)
+{
+#if ENABLE_OLED
+    for (uint8_t p = 0; p < OLED_LINES; p++) {
+        strcpy(oled_text_cache[p], "\x04");             /* page is no longer plain text */
+        if (memcmp(scr[p], oled_fb[p], 128) == 0) continue;
+        memcpy(oled_fb[p], scr[p], 128);
+        oled_dirty |= (uint8_t)(1U << p);
+    }
+#endif
+}
+
+/* ATTACKED: everything readable at arm's length. Header 12 px, countdown
+ * 18 px (the number that matters), rescue hint 12 px on two lines. */
 static void hud_attacked(void)
 {
     char t[8];
     snprintf(t, sizeof(t), "%d s", rescue_secs_left());
-    oled_line_c(0, "!! UNDER ATTACK !!");
-    oled_big_c(1, t);
-    oled_line(3, "");
-    oled_big_c(4, "2x PRESS");
-    oled_big_c(6, "TO RESCUE");
+    memset(scr, 0, sizeof(scr));
+    scr_text(0, 12, 8, "UNDER ATTACK");
+    scr_text(15, 18, 12, t);
+    scr_text(36, 12, 8, "2x PRESS");
+    scr_text(52, 12, 8, "TO RESCUE");
+    oled_commit();
 }
 
 static void hud_terminated(void)

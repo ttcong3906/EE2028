@@ -476,7 +476,14 @@ int main(void)
           "matrix SOS letters use all 8 rows");
     CHECK(strstr(out, "[ATTACK] Drone #3 Was Attacked! Rescue in 10 s") != NULL, "attack message with drone id");
     run_ms(150);
-    CHECK(oled_has(0, "!! UNDER ATTACK !!") && big_has(1, "10 s") && big_has(4, "2x PRESS") && big_has(6, "TO RESCUE"), "OLED: big countdown and big rescue hint");
+    {
+        int top = 0, bot = 0;                          /* header occupies pixel rows 0..11 */
+        for (int x = 0; x < 128; x++) { top |= oled_fb[0][x] & 0x03; bot |= oled_fb[1][x] & 0x0C; }
+        uint8_t cd[3][128]; memcpy(cd, &oled_fb[2], sizeof cd);
+        CHECK(top && bot && oled_text_cache[0][0] == '\x04', "OLED: UNDER ATTACK header 12 px tall");
+        run_ms(1000); run_ms(150);
+        CHECK(memcmp(cd, &oled_fb[2], sizeof cd) != 0 && memcmp(oled_fb[5], oled_fb[6], 128) != 0, "OLED: countdown ticks, rescue hint drawn");
+    }
     dump_oled("3_attacked");
     t0 = led_toggles; run_ms(2000);
     CHECK(led_toggles - t0 == 8, "LED 2 Hz");

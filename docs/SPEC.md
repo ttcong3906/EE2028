@@ -117,7 +117,7 @@ Ký hiệu *(đề)* = yêu cầu bắt buộc của đề bài. **Drone không 
 
 ```
 STANDBY        BATTLE         ATTACKED              TERMINATED
-NESTS 1/3      WAVE 2         !! UNDER ATTACK !!    LOST
+NESTS 1/3      WAVE 2         UNDER ATTACK          LOST
                (CLEARED!)       7 s
 ECHO NE        ▮▮▮▮▮▮▯▯▯▯                           SCORE 230
                                 2x PRESS
@@ -281,7 +281,7 @@ BATTLE không gửi telemetry định kỳ, chỉ gửi sự kiện.
 **ATTACKED:**
 - LED2 nháy 2 Hz *(đề)*. Khi vào: `[EVT] Drone #3 flipped! The Last of EE2028`. Mỗi 1 s: `[ATTACK] Drone #3 Was Attacked! Rescue in 7 s` *(đề)*.
 - Buzzer phát **Morse SOS** liên tục, kêu cả khi im lặng. Matrix hiện chữ S-O-S theo nhịp.
-- OLED: `!! UNDER ATTACK !!`, **số giây còn lại** và `2x PRESS / TO RESCUE` chữ to.
+- OLED: `UNDER ATTACK` (cao 12 px), **số giây còn lại** to nhất (18 px), `2x PRESS / TO RESCUE` (12 px). Màn này vẽ chữ theo cỡ tùy ý (phóng font 5x7 kiểu nearest-neighbour) vì cỡ 2x không đủ chỗ cho 12 ký tự.
 - **Được cứu** khi double press *(đề)* hoặc lệnh `RESCUE`. Báo `[EVT] Rescued! Back to BATTLE`, về BATTLE. Matrix mặt cười 1 s, ba nốt đi lên.
 - Single press và 5-way bị bỏ qua.
 
