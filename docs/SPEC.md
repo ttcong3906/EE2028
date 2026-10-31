@@ -1,7 +1,7 @@
-# EE2028 A2 — The Last of EE2028: Spec v4 (đã chốt 23/10)
+# EE2028 A2 — The Last of EE2028: Spec v4 (cập nhật 31/10)
 
 Tài liệu này là "hợp đồng" của nhóm: code viết đúng theo đây, muốn đổi hành vi thì sửa file này trước.
-Firmware nằm trong **một file `Core/Src/main.c`**, chạy trên **một board**. Không dùng màn hình laptop để hiển thị: mọi thứ hiện trên OLED và LED matrix, laptop chỉ chạy TeraTerm *(đề)*. Lịch sử quyết định ở mục 18.
+Firmware nằm trong **một file `Core/Src/main.c`**, chạy trên **một board**. Không dùng màn hình laptop để hiển thị: mọi thứ hiện trên OLED và LED matrix, laptop chỉ chạy TeraTerm *(đề)*.
 
 ## Tổng quan
 
@@ -9,7 +9,7 @@ Firmware nằm trong **một file `Core/Src/main.c`**, chạy trên **một boar
 |---|---|
 | Board B-L4S5I-IOT01A | Toàn bộ yêu cầu của đề |
 | **LED matrix** | **Bản đồ**: sương mù trinh sát ở STANDBY, bản đồ bắn zombie ở BATTLE, chữ SOS khi bị tấn công |
-| **OLED** | **Vài con số quan trọng, chữ to**: số ổ đã tìm, hướng tiếng vọng, năng lượng laser, điểm, đếm ngược cứu hộ |
+| **OLED** | **Vài con số quan trọng, chữ to**: số ổ đã tìm, hướng tiếng vọng, số ping; đợt, năng lượng laser, điểm; đếm ngược cứu hộ; điểm cuối và kỷ lục |
 | **Buzzer** | **Âm thanh và nhạc**: tiếng vọng sonar, tiếng bắn, nhịp tim nhanh dần theo mức nguy hiểm, nhạc chiến thắng / kỷ lục / kết thúc, SOS |
 | **5-way switch** | **Điều khiển**: lái drone trinh sát, ping sonar, dời tâm ngắm, khóa mục tiêu, đổi công suất |
 
@@ -35,7 +35,7 @@ Ký hiệu *(đề)* = yêu cầu bắt buộc của đề bài. **Drone không 
 | 5-way switch | Cổng Grove I2C, addr 0x03 | Điều khiển |
 | Buzzer | Cổng Grove **D6** (PB1, TIM3_CH4 PWM) | Âm thanh |
 
-**Bus I2C1 (PB8/PB9) dùng chung, đổi tốc độ theo từng thiết bị:** OLED và matrix chạy **100 kHz**, 5-way chạy ở tốc độ mà lần dò tìm ra (**25 kHz** với module của nhóm; ở 50/100 kHz module này không trả lời được). Đổi tốc độ chỉ là ghi lại thanh ghi timing.
+**Bus I2C1 (PB8/PB9) dùng chung, đổi tốc độ theo từng thiết bị:** OLED và matrix chạy **100 kHz**, 5-way cố định **25 kHz** (module của nhóm không trả lời ở 50/100 kHz). Đổi tốc độ chỉ là ghi lại thanh ghi `TIMINGR` (mục 18).
 
 ---
 
@@ -93,7 +93,7 @@ Ký hiệu *(đề)* = yêu cầu bắt buộc của đề bài. **Drone không 
 | 3 | Báo kết quả (chỉ trên UART, OLED vào thẳng màn STANDBY) | | `[EVT] Check: sensors OK, matrix OK, OLED OK, 5-way OK` |
 | 4 | Lưu `P0` (trung bình 10 lần đọc ở bước 2) làm mốc độ cao 0 m | | |
 | 5 | Nếu flash còn hộp đen của lần bay trước | | `[EVT] Black box recovered (18 records), type BLACKBOX` |
-| 6 | Tạo khu vực trinh sát đầu tiên, vào STANDBY | Matrix: số hiệu 1 s; tiếng khởi động | `Entering STANDBY MODE` *(đề)* |
+| 6 | Tạo khu vực trinh sát đầu tiên, vào STANDBY (khoảng 0.4 s sau khi bật nguồn) | Matrix: số 3 (số hiệu drone) trong 1 s; tiếng khởi động | `Entering STANDBY MODE` *(đề)* |
 
 ---
 
@@ -113,7 +113,7 @@ Ký hiệu *(đề)* = yêu cầu bắt buộc của đề bài. **Drone không 
 - Lật board ở STANDBY không có tác dụng. Ở STANDBY không có nhạc nền.
 - Khoảng tìm nơi ở nới rộng hơn chuẩn tiện nghi ASHRAE (khoảng 30–60 %RH) để demo được trong phòng lab có máy lạnh ở Singapore.
 
-**OLED** (0.96", 128x64): chữ nhỏ 6x8 quá bé để đọc khi cầm board, nên mỗi mode chỉ có **một màn hình gồm 2–3 mục chữ to** (cao 16 px, tối đa 10 ký tự), giữa các mục để trống một dòng. Mọi thông tin khác ở TeraTerm (cảm biến, cảnh báo, sự kiện, `STATUS`, `BLACKBOX`) hoặc trên matrix (bản đồ, tâm ngắm).
+**OLED** (0.96", 128x64): chữ nhỏ 6x8 quá bé để đọc khi cầm board, nên mỗi mode chỉ có **một màn hình gồm 2–3 mục chữ to** (font 5x7 nhân đôi: 10x14 px mỗi chữ, chiếm 2 dòng 8 px, tối đa 10 ký tự, căn giữa), giữa các mục để trống một dòng. Riêng ATTACKED dùng thêm cỡ vừa 7x10 px (mục 15). Mọi thông tin khác ở TeraTerm (cảm biến, cảnh báo, sự kiện, `STATUS`, `BLACKBOX`) hoặc trên matrix (bản đồ, tâm ngắm).
 
 ```
 STANDBY        BATTLE         ATTACKED              TERMINATED
@@ -142,6 +142,7 @@ PINGS 2/3      230              TO RESCUE            BEST 520
 | Tắt | Đã quét, trống |
 | Nháy nhanh 4 Hz | Ổ zombie đã tìm thấy |
 | Nháy chậm 1 Hz | Drone trinh sát |
+| Nền tối, một vạch nháy nhanh từ drone (1.5 s sau mỗi ping) | Hướng tới ổ gần nhất chưa tìm thấy |
 
 **Sonar** (PB single hoặc lệnh `PING`):
 1. Matrix vẽ **vòng sóng** lan ra từ drone (4 khung × 90 ms), buzzer kêu "ping".
@@ -168,8 +169,8 @@ PINGS 2/3      230              TO RESCUE            BEST 520
 | 5-way giữa ngắn | Nhảy tới ô nhiễm gần nhất | | |
 | 5-way giữa **giữ 1 s** | Đổi công suất: RULE 5/10 → 1 → 2 → 3 → 4 → 5 → RULE | | `[EVT] Weapon: power 3/10` |
 | **Nhạc nhịp tim** | Mục 12 | Buzzer | |
-| Accel *(đề)* | Phát hiện lật theo kiểu lắp (mục 14) | | → ATTACKED |
-| PB double *(đề)* | Chốt điểm, về STANDBY, **bản đồ bị xóa**, khu vực trinh sát mới | | `Entering STANDBY MODE` |
+| Accel *(đề)* | Phát hiện lật (mục 14) | | → ATTACKED |
+| PB double *(đề)* | Chốt điểm, về STANDBY, **bản đồ bị xóa**, khu vực trinh sát mới | | `Entering STANDBY MODE` + `[EVT] Mission score: …` |
 
 **OLED ở BATTLE:** xem mục 6: đợt, thanh năng lượng 10 ô, điểm. Công suất và cooldown chỉ báo qua UART và tiếng.
 
@@ -262,7 +263,7 @@ BATTLE không gửi telemetry định kỳ, chỉ gửi sự kiện.
 | M | Độ lớn từ trường | `uT` | 10.0 | 100.0 | Từ trường Trái Đất 25–65 µT; > 100 µT là có nam châm hoặc vật nhiễm từ ở gần |
 
 - Đổi đơn vị: A `mg × 9.80665 / 1000`; G `mdps / 1000`; M `mGauss / 10 = µT`.
-- **Độ cao** (lệnh `STATUS`): mốc 0 m là `P0` lúc khởi động, `h = 44330 × (1 − (P/P0)^0.1903)` m. Lọc trung bình trượt rồi làm tròn theo bậc 0.1 hPa (≈ 0.85 m) tính từ P0, có trễ 0.06 hPa để không nhảy. Dòng `[TLM]` vẫn gửi áp suất thật.
+- **Độ cao** (lệnh `STATUS`): mốc 0 m là `P0` lúc khởi động, `h = 44330 × (1 − (P/P0)^0.1903)` m. Áp suất được làm mượt (trung bình mũ `0.7·cũ + 0.3·mới`), rồi làm tròn theo bậc 0.1 hPa (≈ 0.85 m) tính từ P0, có trễ 0.06 hPa để không nhảy qua lại. Dòng `[TLM]` vẫn gửi áp suất thật.
 
 ---
 
@@ -288,7 +289,7 @@ BATTLE không gửi telemetry định kỳ, chỉ gửi sự kiện.
 **TERMINATED** (hết 10 s không ai cứu):
 1. Chốt điểm (mục 11), ghi hộp đen vào flash (mục 16).
 2. `[EVT] Drone #3: no rescue. Black box saved. Self-destructing. Cutting all communication.`
-3. Matrix dấu X; OLED `LOST`, `SCORE 230`, `BEST 520` đều chữ to (OLED tự giữ hình này sau khi MCU tắt); giai điệu kết thúc.
+3. Matrix dấu X; OLED `LOST`, `SCORE 230`, `BEST 520` đều chữ to (OLED tự giữ hình này sau khi MCU tắt); giai điệu kết thúc (chờ 2.5 s cho nhạc và dòng UART cuối phát xong).
 4. Tắt USART1, LED2, các ngắt, MCU vào Standby mode.
 5. Chỉ nút **RESET** đen (hoặc rút nguồn) mới thoát được.
 
@@ -335,6 +336,7 @@ Lái, ngắm, khóa mục tiêu và đổi công suất chỉ làm bằng 5-way.
 ## 18. Kiến trúc, thời gian
 
 - Siêu vòng lặp không chặn, định thời bằng `HAL_GetTick()`, **không có `HAL_Delay` ở bất cứ đâu** (kể cả lúc khởi động). ISR chỉ ghi cờ hoặc dữ liệu (EXTI13 nút, EXTI11 IMU, USART1 RX/TX).
+- **Không dùng `printf()`**: UART gửi qua bộ đệm vòng không chặn (`uart_sendf`, chỉ dùng `vsnprintf` để định dạng chuỗi). **Không có `%f`**: số thực được tự định dạng bằng số nguyên (`fstr`), nên kết quả không phụ thuộc tùy chọn `-u _printf_float` của project dùng để chấm.
 - **Ngắt và độ ưu tiên** (số nhỏ = ưu tiên cao):
 
   | Ngắt | Nguồn | Ưu tiên | ISR làm gì |
@@ -358,39 +360,47 @@ Lái, ngắm, khóa mục tiêu và đổi công suất chỉ làm bằng 5-way.
 | Debounce nút / cửa sổ double | 30–50 ms / < 500 ms |
 | LED BATTLE / ATTACKED | đảo mỗi 500 / 250 ms |
 | Giữ lật để xác nhận / cửa sổ cứu hộ | 300 ms / 10 s |
-| 5-way: đọc / giữ | 30 ms / 1 s |
+| 5-way: đọc / bắt đầu lặp khi giữ / lặp / giữ nút giữa | 30 ms / 400 ms / 150 ms / 1 s |
 | OLED: vẽ lại | 100 ms |
 | Sonar: vòng sóng / tiếng vọng / vạch hướng | 4 × 90 ms / 150 + 100·d ms / 1.5 s, nháy 80 ms |
+| Laser: tia / vùng nổ / tâm ngắm nháy | 4 × 50 ms / 150 ms / 4 Hz |
+| Khởi động / số hiệu trên matrix | ≈ 400 ms (10 lần đọc áp suất × 40 ms, chờ module ≥ 300 ms) / 1 s |
 | Nhịp tim | 1200 ms → 350 ms theo số ô nhiễm |
 | Lây nhiễm / nghỉ giữa hai đợt | 3 s → 1 s / 2 s |
 
+---
 
+## Phụ lục: comment đầu file `main.c`
+
+```c
 /******************************************************************************
- * @file    main.c   (kept as samplecode.c in the repo: reference only)
+ * @file    main.c
  * @brief   EE2028 Assignment 2 (AY26/27 S1) - "The Last of EE2028"
  *          Firmware for an autonomous attacking drone on the B-L4S5I-IOT01A.
  *
  * Full behaviour: docs/SPEC.md (v4). One board, the assignment + 4 Grove
- * modules: LED matrix (map), OLED (text), buzzer (sound + music), 5-way (control).
+ * modules: LED matrix (map), OLED (big text), buzzer (sound + music),
+ * 5-way switch (control).
  *
- *   STANDBY   scouting: 6-sensor telemetry (spec), fly the scout over a fogged
- *             8x8 area with the 5-way, sonar ping with an echo (single press)
- *             to find 3 hidden nests, human-habitat finder (T + H)
- *   BATTLE    shoot zombies on the LED matrix: scouted nests are bigger, aim
- *             with the 5-way, laser charge/auto-fire (spec), weapon power,
- *             waves, score with a hit-streak multiplier, heartbeat music that
- *             speeds up with the danger
- *   ATTACKED  "The Last of EE2028" (spec) + Morse SOS, OLED countdown
+ *   STANDBY    scouting: 6-sensor telemetry (spec), fly the scout over a fogged
+ *              8x8 area with the 5-way, sonar ping with an echo (single press)
+ *              to find 3 hidden nests, human-habitat finder (T + H)
+ *   BATTLE     shoot zombies on the LED matrix: scouted nests are bigger, aim
+ *              with the 5-way, laser charge/auto-fire (spec), weapon power,
+ *              waves, score with a hit-streak multiplier, heartbeat music that
+ *              speeds up with the danger
+ *   ATTACKED   "The Last of EE2028" (spec) + Morse SOS, OLED countdown
  *   TERMINATED score + black box saved to flash, comms cut (spec), MCU Standby
  *
  * Wiring (Grove Base Shield): D6 buzzer (PB1, TIM3_CH4 PWM);
- *   I2C: LED matrix 0x70, OLED 0x3C, 5-way switch 0x03
+ *   I2C1: LED matrix 0x70 and OLED 0x3C at 100 kHz, 5-way switch 0x03 at 25 kHz
  *
  * Design rules:
- *   - Super-loop, fully non-blocking, all timing from HAL_GetTick().
- *   - ISRs only record timestamps / flags / bytes. No I2C, no blocking UART,
- *     no HAL_Delay inside interrupts.
- *   - Every external module and the laptop are optional: the
- *     drone alone still behaves exactly as the assignment specifies.
+ *   - Super-loop, fully non-blocking, all timing from HAL_GetTick();
+ *     no HAL_Delay anywhere, no printf (non-blocking UART ring buffer).
+ *   - ISRs only record timestamps / flags / bytes. No I2C, no UART output
+ *     inside interrupts.
+ *   - Every external module and the laptop are optional: the drone alone
+ *     still behaves exactly as the assignment specifies.
  ******************************************************************************/
-
+```

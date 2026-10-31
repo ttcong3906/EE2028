@@ -2535,6 +2535,7 @@ static void boot_step(void)
 
     GPIO_IT_Init();                                      /* button + IMU interrupts from now on */
     booted = true;
+    boot_tick = HAL_GetTick();                           /* drone number on the matrix for 1 s from here */
     bz_fx(SND(SND_BOOT));
     enter_standby();
 }
