@@ -70,7 +70,7 @@ extern uint8_t SENSOR_IO_Read(uint8_t Addr, uint8_t Reg);
 #define FIVEWAY_POLL_MS         30U
 #define FIVEWAY_REPEAT_DELAY_MS 400U
 #define FIVEWAY_REPEAT_MS       150U
-#define FIVEWAY_HOLD_MS         1000U  /* centre held: altitude zero / weapon power */
+#define FIVEWAY_HOLD_MS         1000U  /* centre held (STANDBY): altitude zero */
 #define I2C_TIMEOUT_MS          25U    /* Grove I2C transfers (5-way may stretch the clock) */
 #define MODULE_BOOT_MS          300U   /* let the 5-way's own MCU start before probing */
 #define MODULE_REPROBE_MS       2000U  /* STANDBY: look again for unplugged modules */
@@ -106,7 +106,7 @@ extern uint8_t SENSOR_IO_Read(uint8_t Addr, uint8_t Reg);
 
 /* --- Laser (units of 1/10 capacity) --- */
 #define LASER_CHARGE_STEP       3
-#define LASER_RULE_COST         5
+#define LASER_SHOT_COST         5      /* each fire costs 5/10 (spec) */
 #define LASER_MAX               10
 #define MAP_OVERRUN_CELLS       48         /* 75 % of 64 */
 
@@ -156,10 +156,6 @@ static uint32_t warn_mask = 0;
 static int      laser_energy = 0;
 static uint32_t score = 0;               /* current mission (scouting + sortie) */
 static int      streak = 0;              /* consecutive hitting shots */
-static uint32_t cooldown_until = 0;
-static bool     cooldown_active = false;
-static bool     weapon_sel = false;      /* false = RULE (5/10, no cooldown) */
-static int      weapon_p = 1;            /* power in SEL mode, 1..5 */
 
 /* Scouting */
 static bool     habitat_found = false;
@@ -820,14 +816,10 @@ static const note_t SND_SOS[] = {
 };
 static const note_t SND_BOOT[]    = { {1500,1500,60,0},{0,0,40,0},{2000,2000,80,0} };
 static const note_t SND_CHARGE[]  = { {1000,1000,50,0} };
-static const note_t SND_PIU[]     = { {3000,1400,260,0} };                      /* p = 1   */
-static const note_t SND_PEW[]     = { {2000,600,180,0} };                       /* p = 2-3 */
-static const note_t SND_BOOM[]    = { {420,80,550,1},{0,0,40,0},{120,60,250,1} }; /* p = 4-5 */
-static const note_t SND_READY[]   = { {2500,2500,20,0} };
+static const note_t SND_BOOM[]    = { {420,80,550,1},{0,0,40,0},{120,60,250,1} }; /* laser shot */
 static const note_t SND_MODE[]    = { {2000,2000,60,0},{0,0,60,0},{2000,2000,60,0} };
 static const note_t SND_ALARM[]   = { {1500,1500,120,0},{0,0,60,0},{1500,1500,120,0} };
 static const note_t SND_HABITAT[] = { {1319,1319,120,0},{0,0,30,0},{1568,1568,220,0} };
-static const note_t SND_REPORT[]  = { {1200,1200,40,0},{0,0,30,0},{1600,1600,40,0} };
 static const note_t SND_VICTORY[] = { {1047,1047,100,0},{1319,1319,100,0},{1568,1568,100,0},{2093,2093,300,0} };
 static const note_t SND_RESCUE[]  = { {1047,1047,150,0},{1319,1319,150,0},{1568,1568,250,0} };
 static const note_t SND_NOPING[]  = { {180,140,300,1} };
@@ -1104,11 +1096,6 @@ static bool fiveway_read(uint8_t *bits)
     return true;
 }
 
-/* Weapon: RULE = assignment behaviour (5/10, no cooldown), SEL = power 1..5. */
-static int weapon_power(void)
-{
-    return weapon_sel ? weapon_p : LASER_RULE_COST;
-}
 
 /* ============================================================================
  * 10. BUTTON (PC13, EXTI13 both edges) AND IMU INT1 (PD11, EXTI11)
@@ -1175,7 +1162,7 @@ static void button_collect(uint8_t *singles, uint8_t *doubles)
  * ==========================================================================*/
 typedef enum {
     BB_SORTIE = 1, BB_CHARGE, BB_FIRE, BB_RSV4, BB_CLOSE, BB_OVERRUN,
-    BB_WEAPON, BB_FLIPPED, BB_RESCUED, BB_STANDBY, BB_DESTRUCT, BB_WAVE, BB_WAVE_CLEAR
+    BB_RSV7, BB_FLIPPED, BB_RESCUED, BB_STANDBY, BB_DESTRUCT, BB_WAVE, BB_WAVE_CLEAR
 } bb_type_t;
 
 enum { BB_END_FLYING = 0, BB_END_RETURNED, BB_END_TIMEOUT };
@@ -1376,18 +1363,13 @@ static void map_spread(void)
     }
 }
 
-/* Blast footprint around the crosshair by power: 1 cell, plus (5), 3x3 (9). */
-static void blast_mask(int p, int cx, int cy, uint8_t out[8])
+/* Blast footprint: the 3x3 cells around the crosshair. */
+static void blast_mask(int cx, int cy, uint8_t out[8])
 {
     memset(out, 0, 8);
-    for (int dy = -1; dy <= 1; dy++) {
-        for (int dx = -1; dx <= 1; dx++) {
-            bool in = (dx == 0 && dy == 0) ||
-                      (p >= 2 && p <= 3 && (dx == 0 || dy == 0)) ||
-                      (p >= 4);
-            if (in && inside(cx + dx, cy + dy)) out[cy + dy] |= (uint8_t)(0x80U >> (cx + dx));
-        }
-    }
+    for (int dy = -1; dy <= 1; dy++)
+        for (int dx = -1; dx <= 1; dx++)
+            if (inside(cx + dx, cy + dy)) out[cy + dy] |= (uint8_t)(0x80U >> (cx + dx));
 }
 
 static void aim_nearest(void)
@@ -1758,8 +1740,8 @@ static void send_stat(void)
                     fstr(fa, altitude_m(), 1, true), scout_found_n, SCOUT_NESTS, pings_left, SONAR_PINGS,
                     (unsigned long)score, (unsigned long)cfg.hiscore, tail);
     else if (state == ST_BATTLE)
-        uart_sendf("[STAT] BATTLE, wave %d, laser %d/10, %s %d/10, score %lu, best %lu%s\r\n",
-                    wave_no, laser_energy, weapon_sel ? "power" : "rule", weapon_power(),
+        uart_sendf("[STAT] BATTLE, wave %d, laser %d/10, score %lu, best %lu%s\r\n",
+                    wave_no, laser_energy,
                     (unsigned long)score, (unsigned long)cfg.hiscore, tail);
     else
         uart_sendf("[STAT] ATTACKED, rescue in %d s\r\n", rescue_secs_left());
@@ -1793,7 +1775,6 @@ static void enter_standby(void)
     map_live = false;                 /* map is wiped when leaving BATTLE */
     if (from_battle) score_finalize(true);
     scout_new();                      /* a new area to scout, score back to 0 */
-    cooldown_active = false;
     fire_anim = false;
     t_sensor = HAL_GetTick() - SENSOR_PERIOD_MS;
 }
@@ -1804,7 +1785,6 @@ static void enter_battle(bool from_rescue)
     if (!from_rescue) {
         uart_write("Entering BATTLE MODE\r\n");
         flip_armed = true;
-        weapon_sel = false;                             /* every sortie starts in RULE mode */
         streak = 0;
         bz_fx(SND(SND_BATTLE));
         bb_clear();                                     /* new sortie, new black box */
@@ -1814,7 +1794,7 @@ static void enter_battle(bool from_rescue)
             if (laser_energy > LASER_MAX) laser_energy = LASER_MAX;
             pings_left = 0;
         }
-        bb_log(BB_SORTIE, laser_energy, weapon_power(), 0, 0);
+        bb_log(BB_SORTIE, laser_energy, 0, 0, 0);
         map_new();
     }
     flip_candidate = false;
@@ -1898,14 +1878,13 @@ static void terminate(void)
 /* --- Laser --- */
 static void laser_fire(void)
 {
-    int p = weapon_power();
     int before = laser_energy;
-    laser_energy -= p;
+    laser_energy -= LASER_SHOT_COST;
 
     /* No 5-way to aim with: lock the nearest target. */
     if (!fiveway_addr) aim_nearest();
 
-    blast_mask(p, aim_x, aim_y, blast_rows);
+    blast_mask(aim_x, aim_y, blast_rows);
     int cleared = 0;
     for (int y = 0; y < 8; y++) for (int x = 0; x < 8; x++) {
         if ((blast_rows[y] & (0x80U >> x)) && cell(x, y)) { cell_clr(x, y); cleared++; }
@@ -1913,9 +1892,7 @@ static void laser_fire(void)
     bb.shots++;
     bb.cells = (uint16_t)(bb.cells + cleared);
     fire_anim = true; fire_t0 = HAL_GetTick(); fire_x = aim_x; fire_y = aim_y;
-    if (p <= 1)      bz_fx(SND(SND_PIU));
-    else if (p <= 3) bz_fx(SND(SND_PEW));
-    else             bz_fx(SND(SND_BOOM));
+    bz_fx(SND(SND_BOOM));
 
     if (cleared) {
         int mult = streak + 1 > 4 ? 4 : streak + 1;     /* hit streak: x1, x2, x3, x4 */
@@ -1928,20 +1905,15 @@ static void laser_fire(void)
         streak = 0;
         uart_sendf("[EVT] Laser fired: missed. Energy %d/10 -> %d/10\r\n", before, laser_energy);
     }
-    bb_log(BB_FIRE, p, aim_x, aim_y, cleared);
-
-    if (weapon_sel && p >= 2) {
-        cooldown_active = true;
-        cooldown_until = HAL_GetTick() + (uint32_t)p * 1000U;
-    }
+    bb_log(BB_FIRE, 0, aim_x, aim_y, cleared);
     if (map_count() < MAP_OVERRUN_CELLS) overrun_reported = false;
 }
 
-/* Auto-fire rule: enough energy, gun not cooling, and zombies on the map
- * (energy is kept during the AREA CLEARED pause and fires at the next wave). */
+/* Auto-fire rule (spec): energy >= 5/10, and zombies on the map (energy is
+ * kept during the AREA CLEARED pause and fires at the next wave). */
 static bool laser_can_fire(void)
 {
-    return state == ST_BATTLE && wave_active && !cooldown_active && laser_energy >= weapon_power();
+    return state == ST_BATTLE && wave_active && laser_energy >= LASER_SHOT_COST;
 }
 
 static void laser_try_fire(void)
@@ -1958,22 +1930,6 @@ static void laser_charge(void)
     bb_log(BB_CHARGE, before, laser_energy, 0, 0);
     if (laser_can_fire()) laser_fire();
     else bz_fx(SND(SND_CHARGE));
-}
-
-/* --- Weapon power (5-way centre hold): RULE -> 1 -> 2 -> 3 -> 4 -> 5 -> RULE --- */
-static void weapon_next(void)
-{
-    if (!weapon_sel)       { weapon_sel = true; weapon_p = 1; }
-    else if (weapon_p < 5) weapon_p++;
-    else                   weapon_sel = false;
-    bool sel = weapon_sel;
-    int  p   = weapon_p;
-    if (sel) uart_sendf("[EVT] Weapon: power %d/10\r\n", p);
-    else     uart_write("[EVT] Weapon: rule mode 5/10\r\n");
-    if (!sel) cooldown_active = false;
-    bb_log(BB_WEAPON, sel, weapon_power(), 0, 0);
-    bz_fx(SND(SND_REPORT));
-    laser_try_fire();
 }
 
 static void aim_move(int dx, int dy)
@@ -2032,8 +1988,7 @@ static void fiveway_center_short(void)
 
 static void fiveway_center_hold(void)
 {
-    if (state == ST_STANDBY) altitude_rezero();
-    else if (state == ST_BATTLE) weapon_next();
+    if (state == ST_STANDBY) altitude_rezero();         /* nothing in BATTLE */
 }
 
 static void fiveway_tick(void)
@@ -2175,14 +2130,6 @@ static void battle_tick(void)
         }
     }
 
-    /* Cooldown */
-    if (cooldown_active && (int32_t)(cooldown_until - HAL_GetTick()) <= 0) {
-        cooldown_active = false;
-        uart_write("[EVT] Laser ready\r\n");
-        bz_fx(SND(SND_READY));
-        laser_try_fire();
-    }
-
     /* Flip detection: IMU interrupt for instant response, polling as a safety net. */
     if (flip_irq || elapsed(t_flip_poll, FLIP_POLL_MS)) {
         flip_irq = false;
@@ -2264,7 +2211,6 @@ static const char *bb_type_name(uint8_t t)
         case BB_FIRE:     return "FIRE";
         case BB_CLOSE:    return "ZOMBIE CLOSE";
         case BB_OVERRUN:  return "AREA OVERRUN";
-        case BB_WEAPON:   return "WEAPON";
         case BB_FLIPPED:  return "FLIPPED";
         case BB_RESCUED:  return "RESCUED";
         case BB_STANDBY:  return "BACK TO STANDBY";
@@ -2287,12 +2233,11 @@ static void bb_print(const bb_image_t *img, const char *source)
         char extra[64] = "";
         switch (r->type) {
             case BB_CHARGE:  snprintf(extra, sizeof(extra), " %d/10 -> %d/10", r->a, r->b); break;
-            case BB_FIRE:    snprintf(extra, sizeof(extra), " p=%d at (%d,%d), %ld cell%s cleared", r->a, r->b, r->c, (long)r->d, r->d == 1 ? "" : "s"); break;
+            case BB_FIRE:    snprintf(extra, sizeof(extra), " at (%d,%d), %ld cell%s cleared", r->b, r->c, (long)r->d, r->d == 1 ? "" : "s"); break;
             case BB_OVERRUN: snprintf(extra, sizeof(extra), " %d/64", r->a); break;
-            case BB_WEAPON:  snprintf(extra, sizeof(extra), " %s %d/10", r->a ? "select" : "rule", r->b); break;
             case BB_FLIPPED: snprintf(extra, sizeof(extra), " Az=%ld.%02ld m/s^2", (long)(r->d / 100), (long)labs(r->d % 100)); break;
             case BB_RESCUED: snprintf(extra, sizeof(extra), " with %d s left", r->a); break;
-            case BB_SORTIE:  snprintf(extra, sizeof(extra), " energy %d/10, power %d/10", r->a, r->b); break;
+            case BB_SORTIE:  snprintf(extra, sizeof(extra), " energy %d/10", r->a); break;
             case BB_WAVE:    snprintf(extra, sizeof(extra), " %d, %d outbreaks", r->a, r->b); break;
             case BB_WAVE_CLEAR: snprintf(extra, sizeof(extra), " %d (%d cells so far)", r->a, r->b); break;
             default: break;

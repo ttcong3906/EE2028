@@ -339,7 +339,7 @@ int main(void)
     cfg.muted = false;
     cfg_load();
     CHECK(cfg.muted, "config survives a reset (re-read from flash)");
-    bz_fx(SND(SND_REPORT));
+    bz_fx(SND(SND_CHARGE));
     CHECK(bz_quiet(), "MUTE silences the buzzer");
     type("MUTE OFF\r");
     clear_out(); type("MUTE MAYBE\r"); type("ID 5\r"); type("MOUNT ZDOWN\r");
@@ -361,7 +361,7 @@ int main(void)
     CHECK(map_count() == 3 && wave_no == 1 && strstr(out, "[EVT] Wave 1: 3 outbreaks\r\n"), "wave 1 without scouting: 3 single-cell nests");
     CHECK(!strstr(out, "[STAT]") && count("\r\n") == 2, "entering BATTLE: just the mode line and the wave line");
     clear_out(); type("STATUS\r");
-    CHECK(strstr(out, "[STAT] BATTLE, wave 1, laser 0/10, rule 5/10, score 0, best 0\r\n") != NULL, "STATUS in BATTLE: one short line");
+    CHECK(strstr(out, "[STAT] BATTLE, wave 1, laser 0/10, score 0, best 0\r\n") != NULL, "STATUS in BATTLE: one short line");
     CHECK(bb.count == 2 && bb.rec[0].type == BB_SORTIE && bb.rec[1].type == BB_WAVE, "black box restarted at sortie start");
     clear_out(); type("MUTE ON\r");
     CHECK(strstr(out, "ERR not allowed in BATTLE") && !cfg.muted, "config commands only in STANDBY");
@@ -391,42 +391,26 @@ int main(void)
     single();
     CHECK(strstr(out, "[EVT] Laser fired: 9 down, +90 x1. Energy 6/10 -> 1/10\r\n") != NULL, "rule mode: auto-fire at 6, BOOM clears 3x3, +90");
     CHECK(!bz_playing(SND_HEART), "shot sound interrupts the heartbeat");
-    CHECK(!cooldown_active && bb.cells == 9, "rule mode: no cooldown, 9 zombies down");
+    CHECK(bb.cells == 9, "9 zombies down");
     run_ms(150);
     CHECK(big_has(6, "90") && strstr(oled_text_cache[3], "3/10") == NULL && strstr(oled_text_cache[3], "1/10"), "OLED: score and energy bar follow the shot");
     dump_oled("2_battle");
 
-    printf("== weapon power: 5-way centre hold ==\n");
+    printf("== hit streak, centre hold ==\n");
     clear_out(); fw_hold(FIVEWAY_IDX_CENTER, 1100);
-    CHECK(strstr(out, "[EVT] Weapon: power 1/10\r\n") && weapon_sel && weapon_power() == 1, "centre hold: RULE -> 1/10");
-    CHECK(strstr(out, "Target locked") == NULL, "hold does not also lock");
-    CHECK(strstr(out, "Laser fired") && laser_energy == 0, "power change auto-fires the stored 1/10");
-    memset(map_rows, 0, 8); cell_set(3, 3); cell_set(4, 3); cell_set(0, 7);
-    aim_x = 3; aim_y = 3;
+    CHECK(strstr(out, "[EVT]") == NULL && laser_energy == 1, "centre hold in BATTLE does nothing (no power selection)");
+    memset(map_rows, 0, 8); cell_set(3, 3); cell_set(6, 3); cell_set(0, 7);
+    aim_x = 3; aim_y = 3; t_spread = HAL_GetTick();
+    clear_out(); single(); single();
+    CHECK(strstr(out, "Laser fired: 1 down, +20 x2. Energy 7/10 -> 2/10\r\n") != NULL, "every shot costs 5/10; second hit in a row x2");
+    for (int i = 0; i < 3; i++) fw_tap(FIVEWAY_IDX_RIGHT);
+    CHECK(aim_x == 6 && aim_y == 3, "5-way right moves the crosshair");
+    t_spread = HAL_GetTick();
     clear_out(); single();
-    CHECK(strstr(out, "Laser fired: 1 down, +10 x1. Energy 3/10 -> 2/10") && !cooldown_active, "p=1: single cell, no cooldown (miss before reset the streak)");
-    fw_tap(FIVEWAY_IDX_RIGHT);
-    CHECK(aim_x == 4 && aim_y == 3, "5-way right moves the crosshair");
-    clear_out(); single();
-    CHECK(strstr(out, "Laser fired: 1 down, +20 x2. Energy 5/10 -> 4/10"), "p=1 fires every press, leftover kept, streak x2");
-    weapon_p = 2;                                     /* skip 2/10 (it would fire the 4/10 stored) */
-    clear_out(); fw_hold(FIVEWAY_IDX_CENTER, 1100);
-    CHECK(weapon_power() == 3 && strstr(out, "[EVT] Weapon: power 3/10\r\n"), "hold again: 2 -> 3");
-    CHECK(strstr(out, "Laser fired") && cooldown_active && laser_energy == 1, "power change auto-fires when energy is enough");
-    memset(map_rows, 0, 8);
-    for (int x = 2; x <= 6; x++) cell_set(x, 3);
-    cell_set(4, 2); cell_set(4, 4); cell_set(3, 2); cell_set(0, 7);
-    aim_x = 4; aim_y = 3;
-    clear_out(); single();
-    CHECK(strstr(out, "fired") == NULL && strstr(out, "charged: 1/10 -> 4/10"), "during cooldown: charge only");
-    run_ms(150);
-    clear_out(); run_ms(3100);
-    CHECK(strstr(out, "[EVT] Laser ready") && strstr(out, "Laser fired: 5 down"), "cooldown ends -> ready + auto-fire, plus-shaped blast");
-    laser_energy = 0;
-    clear_out(); fw_hold(FIVEWAY_IDX_CENTER, 1100); fw_hold(FIVEWAY_IDX_CENTER, 1100);
-    CHECK(strstr(out, "power 4/10") && strstr(out, "power 5/10"), "hold: 3 -> 4 -> 5");
-    clear_out(); fw_hold(FIVEWAY_IDX_CENTER, 1100);
-    CHECK(strstr(out, "[EVT] Weapon: rule mode 5/10\r\n") && !weapon_sel && !cooldown_active, "hold after 5 -> RULE");
+    CHECK(strstr(out, "Laser fired: 1 down, +30 x3. Energy 5/10 -> 0/10\r\n") != NULL, "third hit in a row x3");
+    aim_x = 3; aim_y = 6; t_spread = HAL_GetTick();
+    clear_out(); single(); single();
+    CHECK(strstr(out, "Laser fired: missed. Energy 6/10 -> 1/10\r\n") && streak == 0, "a miss resets the streak");
 
     printf("== crosshair, lock, commands in BATTLE ==\n");
     memset(map_rows, 0, 8); cell_set(6, 1); cell_set(0, 7);
@@ -531,16 +515,14 @@ int main(void)
     CHECK(state == ST_STANDBY && !map_live && scout_found_n == 0, "double -> STANDBY, map wiped, new area to scout");
     clear_out(); type("BLACKBOX\r");
     CHECK(strstr(out, "LAST MISSION: waves cleared 1, shots fired") && strstr(out, "END: RETURNED"), "black box summary (RETURNED)");
-    CHECK(strstr(out, "[BBOX] Last sortie (RAM), drone #3") && strstr(out, "WAVE CLEARED") && strstr(out, "WEAPON") &&
+    CHECK(strstr(out, "[BBOX] Last sortie (RAM), drone #3") && strstr(out, "WAVE CLEARED") &&
           strstr(out, "FLIPPED Az=-9.80") && strstr(out, "RESCUED") && strstr(out, "BACK TO STANDBY"), "BLACKBOX prints the sortie");
-    weapon_sel = true; weapon_p = 2;
     run_ms(1500);
     clear_out(); type("HISCORE RESET\r");
     CHECK(strstr(out, "[CMD] OK HISCORE 0 (saved)") && cfg.hiscore == 0, "HISCORE RESET");
     cfg.hiscore = sortie_score; cfg_save();
     dbl(); clear_out(); type("BLACKBOX\r");
     CHECK(strstr(out, "ERR not allowed in BATTLE") != NULL, "BLACKBOX not allowed in BATTLE");
-    CHECK(!weapon_sel && weapon_power() == 5, "new sortie starts in RULE mode");
 
     printf("== altitude deadband ==\n");
     altitude_zero(1008.0f);

@@ -11,7 +11,7 @@ Firmware nằm trong **một file `Core/Src/main.c`**, chạy trên **một boar
 | **LED matrix** | **Bản đồ**: sương mù trinh sát ở STANDBY, bản đồ bắn zombie ở BATTLE, chữ SOS khi bị tấn công |
 | **OLED** | **Vài con số quan trọng, chữ to**: số ổ đã tìm, hướng tiếng vọng, số ping; đợt, năng lượng laser, điểm; đếm ngược cứu hộ; điểm cuối và kỷ lục |
 | **Buzzer** | **Âm thanh và nhạc**: tiếng vọng sonar, tiếng bắn, nhịp tim nhanh dần theo mức nguy hiểm, nhạc chiến thắng / kỷ lục / kết thúc, SOS |
-| **5-way switch** | **Điều khiển**: lái drone trinh sát, ping sonar, dời tâm ngắm, khóa mục tiêu, đổi công suất |
+| **5-way switch** | **Điều khiển**: lái drone trinh sát, ping sonar, dời tâm ngắm, khóa mục tiêu |
 
 **Câu chuyện chung:** drone đi qua đúng vòng đời mà đề cho:
 **trinh sát** ở STANDBY (6 cảm biến, lái drone qua vùng sương mù, dùng sonar dò ổ zombie, tìm nơi ở cho người) → **chiến đấu** ở BATTLE (ổ đã tìm thấy hiện ra trên bản đồ, ngắm bằng 5-way, bắn theo đợt, ghi điểm) → **bị hạ** ở The Last of EE2028 (SOS, chờ cứu) → **được cứu** hoặc **tự hủy** (cắt liên lạc, hộp đen được giữ lại để điều tra).
@@ -164,15 +164,15 @@ PINGS 2/3      230              TO RESCUE            BEST 520
 |---|---|---|---|
 | Khi vào | Đổi ping dư thành năng lượng, bắt đầu **đợt 1** từ khu vực vừa trinh sát (mục 9) | Đoạn nhạc vào trận | `Entering BATTLE MODE` *(đề)* + `[EVT] Wave 1: 3 outbreaks (2 scouted)` |
 | LED2 *(đề)* | Nháy 1 Hz | | |
-| PB single *(đề)* | Nạp +3/10, đủ năng lượng thì tự bắn (mục 10) | Bíp nạp; tia + vùng nổ, piuuu / pew / BOOM | `[EVT] Laser charged: 3/10 -> 6/10` |
+| PB single *(đề)* | Nạp +3/10, đủ năng lượng thì tự bắn (mục 10) | Bíp nạp; tia + vùng nổ 3x3, BOOM | `[EVT] Laser charged: 3/10 -> 6/10` |
 | 5-way 4 hướng | Dời tâm ngắm 1 ô, giữ thì chạy liên tục | Tâm ngắm nháy 4 Hz | |
 | 5-way giữa ngắn | Nhảy tới ô nhiễm gần nhất | | |
-| 5-way giữa **giữ 1 s** | Đổi công suất: RULE 5/10 → 1 → 2 → 3 → 4 → 5 → RULE | | `[EVT] Weapon: power 3/10` |
+| 5-way giữa **giữ 1 s** | Không làm gì (chỉ dùng ở STANDBY) | | |
 | **Nhạc nhịp tim** | Mục 12 | Buzzer | |
 | Accel *(đề)* | Phát hiện lật (mục 14) | | → ATTACKED |
 | PB double *(đề)* | Chốt điểm, về STANDBY, **bản đồ bị xóa**, khu vực trinh sát mới | | `Entering STANDBY MODE` + `[EVT] Mission score: …` |
 
-**OLED ở BATTLE:** xem mục 6: đợt, thanh năng lượng 10 ô, điểm. Công suất và cooldown chỉ báo qua UART và tiếng.
+**OLED ở BATTLE:** xem mục 6: đợt, thanh năng lượng 10 ô, điểm.
 
 BATTLE không gửi telemetry định kỳ, chỉ gửi sự kiện.
 
@@ -195,20 +195,10 @@ BATTLE không gửi telemetry định kỳ, chỉ gửi sự kiện.
 ## 10. Laser gun
 
 - Năng lượng theo đơn vị **1/10**, số nguyên 0–10. Mỗi single press **+3/10** *(đề)*.
-- **Chế độ bắn:**
-  - **RULE** (mặc định, đúng đề): mỗi phát `p = 5`, đủ năng lượng là tự bắn ngay, **không cooldown** *(đề)*.
-  - **SEL** (5-way giữa giữ 1 s, đi vòng RULE → 1 → … → 5 → RULE): `p` = 1–5. Sau mỗi phát có **cooldown `p` giây**, riêng `p = 1` không có. Trong lúc cooldown vẫn nạp được. Hết cooldown mà đủ năng lượng thì tự bắn ngay.
-- Tự bắn khi năng lượng ≥ `p`, mỗi lần **một phát**, trừ `p`. Năng lượng thừa để dành, tối đa 10/10.
+- **Mỗi phát tốn 5/10** *(đề)*. Năng lượng ≥ 5/10 là tự bắn ngay, mỗi lần **một phát**, không cooldown. Năng lượng thừa để dành, tối đa 10/10.
 - Trong 2 s nghỉ sau AREA CLEARED bản đồ trống nên không bắn (nạp vẫn được). Đợt mới vừa xuất hiện mà đủ năng lượng thì bắn ngay.
-- Mỗi lần vào BATTLE (chuyến xuất kích mới) chế độ bắn về **RULE**. Được cứu thì giữ nguyên chế độ đang dùng.
-
-| `p` | Vùng nổ | Âm thanh |
-|---|---|---|
-| 1 | 1 ô | "piuuu": cao, ngắn |
-| 2–3 | Chữ thập 5 ô | "pew" |
-| 4–5 | Vuông 3x3 | "BOOM": ù trầm 420 → 80 Hz rồi 120 → 60 Hz, có rung |
-
-- Thông báo: `[EVT] Laser fired: 7 down, +140 x2. Energy 6/10 -> 1/10`; trượt: `[EVT] Laser fired: missed. Energy 5/10 -> 0/10`; hết cooldown: `[EVT] Laser ready`.
+- **Vùng nổ:** vuông 3x3 quanh tâm ngắm. **Âm thanh:** "BOOM", ù trầm 420 → 80 Hz rồi 120 → 60 Hz, có rung.
+- Thông báo: `[EVT] Laser fired: 7 down, +140 x2. Energy 6/10 -> 1/10`; trượt: `[EVT] Laser fired: missed. Energy 5/10 -> 0/10`.
 - Matrix: tia quét từ drone tới tâm ngắm (4 khung × 50 ms), rồi vùng nổ nháy 150 ms.
 
 ---
@@ -238,7 +228,7 @@ BATTLE không gửi telemetry định kỳ, chỉ gửi sự kiện.
 | STANDBY: sonar | "ping" rồi **tiếng vọng** (cao độ và độ trễ theo khoảng cách, mục 7) |
 | Vào BATTLE | Đoạn nhạc vào trận (4 nốt) |
 | **BATTLE: nhịp tim** | Hai tiếng "thình thịch" trầm lặp lại khi buzzer rảnh. Chu kỳ theo số ô nhiễm: **1200 ms** khi bản đồ gần trống, nhanh dần tới **350 ms** khi ≥ 48 ô. Tắt trong lúc nghỉ giữa hai đợt |
-| BATTLE: nạp / bắn | Bíp ngắn / piuuu, pew, BOOM |
+| BATTLE: nạp / bắn | Bíp ngắn / BOOM |
 | Dọn sạch đợt | Nhạc chiến thắng |
 | Phá kỷ lục | Đoạn nhạc kỷ lục |
 | ATTACKED | **Morse SOS liên tục, kêu cả khi `MUTE ON`** |
@@ -298,7 +288,7 @@ BATTLE không gửi telemetry định kỳ, chỉ gửi sự kiện.
 ## 16. Hộp đen (black box)
 
 - Ghi **từng chuyến xuất kích**: bắt đầu khi vào BATTLE (xóa bản ghi cũ trong RAM và flash), tới khi về STANDBY hoặc tự hủy. Được cứu vẫn là cùng chuyến.
-- **32 sự kiện gần nhất** (bộ đệm vòng): đợt bắt đầu/dọn xong, nạp, bắn, đổi công suất, quá 75 %, bị lật, được cứu, về STANDBY, tự hủy.
+- **32 sự kiện gần nhất** (bộ đệm vòng): đợt bắt đầu/dọn xong, nạp, bắn, quá 75 %, bị lật, được cứu, về STANDBY, tự hủy.
 - **Bản tổng kết:** số đợt đã dọn, số phát bắn, số ô đã dọn, thời gian bay, lý do kết thúc (`RETURNED` / `RESCUE TIMEOUT`).
 - Khi tự hủy: ghi **một lần** vào **trang flash cuối cùng** (có mã kiểm tra), sống sót qua RESET và mất điện.
 - Xem ở STANDBY: lệnh `BLACKBOX` (in tổng kết rồi từng sự kiện).
@@ -313,7 +303,7 @@ BATTLE không gửi telemetry định kỳ, chỉ gửi sự kiện.
 
 ```
 [STAT] STANDBY, alt +2.1 m, nests 2/3, pings 1/3, score 60, best 520
-[STAT] BATTLE, wave 2, laser 6/10, rule 5/10, score 230, best 520
+[STAT] BATTLE, wave 2, laser 6/10, score 230, best 520
 [STAT] ATTACKED, rescue in 7 s
 ```
 
@@ -329,7 +319,7 @@ Thiếu module thì thêm `, missing: OLED 5-way` vào cuối dòng.
 | `MUTE ON\|OFF`, `HISCORE RESET` | Cấu hình, tự lưu flash | STANDBY |
 | `BLACKBOX` | In hộp đen | STANDBY |
 
-Lái, ngắm, khóa mục tiêu và đổi công suất chỉ làm bằng 5-way.
+Lái và ngắm, khóa mục tiêu chỉ làm bằng 5-way.
 
 ---
 
@@ -386,8 +376,8 @@ Lái, ngắm, khóa mục tiêu và đổi công suất chỉ làm bằng 5-way.
  *              8x8 area with the 5-way, sonar ping with an echo (single press)
  *              to find 3 hidden nests, human-habitat finder (T + H)
  *   BATTLE     shoot zombies on the LED matrix: scouted nests are bigger, aim
- *              with the 5-way, laser charge/auto-fire (spec), weapon power,
- *              waves, score with a hit-streak multiplier, heartbeat music that
+ *              with the 5-way, laser charge/auto-fire (spec), waves,
+ *              score with a hit-streak multiplier, heartbeat music that
  *              speeds up with the danger
  *   ATTACKED   "The Last of EE2028" (spec) + Morse SOS, OLED countdown
  *   TERMINATED score + black box saved to flash, comms cut (spec), MCU Standby
