@@ -144,7 +144,7 @@ PINGS 2/3      230              TO RESCUE            BEST 520
 | Nháy chậm 1 Hz | Drone trinh sát |
 | Nền tối, một vạch nháy nhanh từ drone (1.5 s sau mỗi ping) | Hướng tới ổ gần nhất chưa tìm thấy |
 
-**Sonar** (PB single hoặc lệnh `PING`):
+**Sonar** (PB single, nhấn ngắn nút giữa 5-way, hoặc lệnh `PING`):
 1. Matrix vẽ **vòng sóng** lan ra từ drone (4 khung × 90 ms), buzzer kêu "ping".
 2. Sonar dò **ổ chưa tìm thấy gần nhất**. Khoảng cách `d` tính theo số ô đi chéo được (`max(|dx|, |dy|)`, 1–7), hướng làm tròn về 8 hướng (N là phía hàng 0).
 3. **Tiếng vọng** đến sau `150 + 100·d` ms, cao độ `2600 − 250·d` Hz: ổ càng gần thì vọng càng sớm và càng cao.
@@ -206,7 +206,7 @@ BATTLE không gửi telemetry định kỳ, chỉ gửi sự kiện.
 |---|---|---|
 | 1 | 1 ô | "piuuu": cao, ngắn |
 | 2–3 | Chữ thập 5 ô | "pew" |
-| 4–5 | Vuông 3x3 | "BOOM": ù trầm 400 → 80 Hz, có rung |
+| 4–5 | Vuông 3x3 | "BOOM": ù trầm 420 → 80 Hz rồi 120 → 60 Hz, có rung |
 
 - Thông báo: `[EVT] Laser fired: 7 down, +140 x2. Energy 6/10 -> 1/10`; trượt: `[EVT] Laser fired: missed. Energy 5/10 -> 0/10`; hết cooldown: `[EVT] Laser ready`.
 - Matrix: tia quét từ drone tới tâm ngắm (4 khung × 50 ms), rồi vùng nổ nháy 150 ms.
