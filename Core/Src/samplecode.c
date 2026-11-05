@@ -1,6 +1,4 @@
-/* ============================================================================
- * 0. INCLUDES
- * ==========================================================================*/
+/* include */
 #include "main.h"
 #include <stdio.h>
 #include <string.h>
@@ -10,7 +8,7 @@
 #include <stdint.h>
 #include <ctype.h>
 #include <math.h>
-
+/* sensors */
 #include "../../Drivers/BSP/B-L4S5I-IOT01/stm32l4s5i_iot01.h"
 #include "../../Drivers/BSP/B-L4S5I-IOT01/stm32l4s5i_iot01_accelero.h"
 #include "../../Drivers/BSP/B-L4S5I-IOT01/stm32l4s5i_iot01_gyro.h"
@@ -19,50 +17,46 @@
 #include "../../Drivers/BSP/B-L4S5I-IOT01/stm32l4s5i_iot01_hsensor.h"
 #include "../../Drivers/BSP/B-L4S5I-IOT01/stm32l4s5i_iot01_psensor.h"
 
-/* BSP low-level sensor bus access (defined in stm32l4s5i_iot01.c) */
 extern void    SENSOR_IO_Write(uint8_t Addr, uint8_t Reg, uint8_t Value);
 extern uint8_t SENSOR_IO_Read(uint8_t Addr, uint8_t Reg);
 
-/* ============================================================================
- * 1. CONFIGURATION
- * ==========================================================================*/
+/* configuration */
 
-/* --- Feature switches --- */
 #define ENABLE_MATRIX           1
 #define ENABLE_BUZZER           1
-#define ENABLE_OLED             1      /* Grove OLED 128x64 (SSD1306/SSD1315) */
-#define ENABLE_FIVEWAY          1      /* Grove 5-way switch (I2C)          */
-#define ENABLE_FLASH            1      /* black box + config in flash       */
-#define TERMINATE_USE_STANDBY   1      /* 1: MCU Standby mode, 0: sleep loop */
+#define ENABLE_OLED             1   /* Grove OLED 128x64 */
+#define ENABLE_FIVEWAY          1   /* Grove 5-way switch (I2C) */
+#define ENABLE_FLASH            1   /* black box + config in flash */
+#define TERMINATE_USE_STANDBY   1   /* 1: MCU Standby mode, 0: sleep loop */
 
-#define DRONE_ID                3      /* our drone number               */
+#define DRONE_ID                3   
 
-/* --- External module quirks (change if the picture looks wrong) --- */
+
 #define MATRIX_I2C_ADDR         0x70
-#define MATRIX_FLIP_X           0      /* 1 if letters/arrows are mirrored  */
+#define MATRIX_FLIP_X           0      
 #define OLED_I2C_ADDR           0x3C
-#define OLED_COL_OFFSET         0      /* 2 for SH1106-based 1.3" modules   */
+#define OLED_COL_OFFSET         0     
 
-/* --- Seeed Grove multi-switch (5-way tactile) --- */
+/* Grove 5-way switch */
 #define FIVEWAY_I2C_ADDR        0x03
 #define MS_CMD_GET_DEV_ID       0x00
 #define MS_CMD_GET_DEV_EVENT    0x01
 #define MS_VID                  0x2886
 #define MS_PID_5WAY             0x0002
-#define MS_RAW_ACTIVE_LEVEL     0      /* raw status bit when pressed       */
-#define FIVEWAY_IDX_UP          0      /* button index order inside module  */
+#define MS_RAW_ACTIVE_LEVEL     0   /* Raw status bit when pressed */
+#define FIVEWAY_IDX_UP          0   /* Button index order inside module */
 #define FIVEWAY_IDX_LEFT        1
 #define FIVEWAY_IDX_DOWN        2
 #define FIVEWAY_IDX_RIGHT       3
 #define FIVEWAY_IDX_CENTER      4
 
-/* --- Timing (ms) --- */
+/* Timing */
 #define SENSOR_PERIOD_MS        1000U
 #define DEBOUNCE_PRESS_MS       50U
 #define DEBOUNCE_RELEASE_MS     30U
 #define DOUBLE_PRESS_MS         500U
-#define LED_BATTLE_TOGGLE_MS    500U   /* 1 Hz */
-#define LED_ATTACK_TOGGLE_MS    250U   /* 2 Hz */
+#define LED_BATTLE_TOGGLE_MS    500U
+#define LED_ATTACK_TOGGLE_MS    250U
 #define FLIP_POLL_MS            100U
 #define FLIP_HOLD_MS            300U
 #define ATTACK_MSG_MS           1000U
@@ -75,27 +69,27 @@ extern uint8_t SENSOR_IO_Read(uint8_t Addr, uint8_t Reg);
 #define MODULE_BOOT_MS          300U   /* let the 5-way's own MCU start before probing */
 #define MODULE_REPROBE_MS       2000U  /* STANDBY: look again for unplugged modules */
 #define HABITAT_HOLD_S          3
-#define WAVE_PAUSE_MS           2000U  /* AREA CLEARED -> next wave            */
-#define WAVE_SPREAD_START_MS    3000U  /* wave 1 spreads 1 cell per 3 s        */
-#define WAVE_SPREAD_STEP_MS     250U   /* each wave spreads 0.25 s faster      */
+#define WAVE_PAUSE_MS           2000U  /* AREA CLEARED -> next wave */
+#define WAVE_SPREAD_START_MS    3000U  /* wave 1 spreads 1 cell per 3 s */
+#define WAVE_SPREAD_STEP_MS     250U   /* each wave spreads 0.25 s faster */
 #define WAVE_SPREAD_MIN_MS      1000U
 #define WAVE_MAX_SEEDS          12
 #define CROSSHAIR_BLINK_MS      125U   /* 4 Hz */
 #define ICON_MS                 1000U
 #define HOUSE_ICON_MS           2000U
 #define SCOUT_NESTS             3      /* hidden nests per area = wave 1 outbreaks */
-#define SONAR_PINGS             3      /* sonar pings per area                 */
-#define SONAR_RING_MS           90U    /* ring animation: 4 frames             */
+#define SONAR_PINGS             3      /* sonar pings per area */
+#define SONAR_RING_MS           90U    /* ring animation: 4 frames */
 #define SONAR_RAY_MS            1500U  /* echo: direction ray on a blank matrix */
-#define SONAR_RAY_BLINK_MS      80U    /* ray blinks fast (about 6 Hz)          */
-#define BEAT_SLOW_MS            1200U  /* heartbeat period, empty map          */
-#define BEAT_FAST_MS            350U   /* heartbeat period, map at 75 %        */
+#define SONAR_RAY_BLINK_MS      80U    /* ray blinks fast (about 6 Hz) */
+#define BEAT_SLOW_MS            1200U  /* heartbeat period, empty map */
+#define BEAT_FAST_MS            350U   /* heartbeat period, map at 75 % */
 #define BOOT_ID_MS              1000U
 #define BEAM_FRAME_MS           50U
 #define BLAST_FLASH_MS          150U
 #define OLED_REFRESH_MS         100U
 
-/* --- Physics / thresholds --- */
+/* Thresholds */
 #define G_MS2                   9.80665f
 #define FLIP_G_FRACTION         0.5f
 #define ALT_STEP_HPA            0.1f      /* altitude only moves per 0.1 hPa */
@@ -104,15 +98,13 @@ extern uint8_t SENSOR_IO_Read(uint8_t Addr, uint8_t Reg);
 #define HAB_H_MIN               40.0f
 #define HAB_H_MAX               70.0f
 
-/* --- Laser (units of 1/10 capacity) --- */
+/* Laser */
 #define LASER_CHARGE_STEP       3
 #define LASER_SHOT_COST         5      /* each fire costs 5/10 (spec) */
 #define LASER_MAX               10
 #define MAP_OVERRUN_CELLS       48         /* 75 % of 64 */
 
-/* ============================================================================
- * 2. TYPES AND GLOBAL STATE
- * ==========================================================================*/
+/* TYPES AND GLOBAL STATE */
 typedef enum { ST_STANDBY = 0, ST_BATTLE, ST_ATTACKED, ST_TERMINATED } sys_state_t;
 
 enum { S_T = 0, S_P, S_H, S_A, S_G, S_M, S_COUNT };
@@ -123,14 +115,14 @@ typedef struct {
     bool  use_low, use_high;
 } thresh_t;
 
-/* Safety thresholds: physical reasoning in docs/SPEC.md section 11. */
+/* sensor safety thresholds */
 static thresh_t th[S_COUNT] = {
-    { "T", "C",      10.0f,   35.0f,  true,  true  }, /* Li-ion safe range       */
-    { "P", "hPa",   950.0f, 1040.0f,  true,  true  }, /* ~540 m flight ceiling   */
-    { "H", "%RH",    20.0f,   80.0f,  true,  true  }, /* static / condensation   */
-    { "A", "m/s^2",   3.0f,   15.0f,  true,  true  }, /* free fall / impact      */
-    { "G", "dps",     0.0f,  300.0f,  false, true  }, /* spin out of control     */
-    { "M", "uT",     10.0f,  100.0f,  true,  true  }, /* magnetic interference   */
+    { "T", "C",      10.0f,   35.0f,  true,  true  }, /* Li-ion safe range */
+    { "P", "hPa",   950.0f, 1040.0f,  true,  true  }, /* ~540 m flight ceiling */
+    { "H", "%RH",    20.0f,   80.0f,  true,  true  }, /* static / condensation */
+    { "A", "m/s^2",   3.0f,   15.0f,  true,  true  }, /* free fall / impact */
+    { "G", "dps",     0.0f,  300.0f,  false, true  }, /* spin out of control */
+    { "M", "uT",     10.0f,  100.0f,  true,  true  }, /* magnetic interference */
 };
 
 typedef struct {
@@ -152,20 +144,20 @@ static uint32_t t_sensor = 0, t_led = 0, t_flip_poll = 0, t_attack_start = 0, t_
 static bool     led_on = false;
 static uint32_t warn_mask = 0;
 
-/* Laser and battle statistics */
+/* laser and score */
 static int      laser_energy = 0;
 static uint32_t score = 0;               /* current mission (scouting + sortie) */
 static int      streak = 0;              /* consecutive hitting shots */
 
-/* Scouting */
+/* scouting */
 static bool     habitat_found = false;
 static int      habitat_secs = 0;
 
-/* Flip detection */
+/* flip detection */
 static bool     flip_armed = true, flip_candidate = false;
 static uint32_t flip_since = 0;
 
-/* Peripherals */
+/* peripherals */
 UART_HandleTypeDef huart1;
 I2C_HandleTypeDef  hi2c1;
 TIM_HandleTypeDef  htim3;
@@ -175,7 +167,7 @@ static inline bool elapsed(uint32_t since, uint32_t ms)
     return (uint32_t)(HAL_GetTick() - since) >= ms;
 }
 
-/* Small xorshift PRNG for the infection map (seeded from sensor noise). */
+/* random numbers for the infection map */
 static uint32_t rng_state = 0x2028EE28u;
 static uint32_t rng(void)
 {
@@ -195,9 +187,7 @@ static const char *mode_name(sys_state_t s)
     }
 }
 
-/* ============================================================================
- * 3. UART: non-blocking TX ring buffer + interrupt RX, console line editing
- * ==========================================================================*/
+/* UART: non blocking TX ring buffer + interrupt RX, console line editing */
 #define TX_BUF_SIZE 4096U
 #define RX_BUF_SIZE 256U
 #define CMD_MAX_LEN 64U
@@ -213,7 +203,7 @@ static volatile uint16_t rx_head = 0, rx_tail = 0;
 static char              cmd_line[CMD_MAX_LEN];
 static uint16_t          cmd_len = 0;
 
-/* Start the next interrupt-driven transfer. Call with IRQs off or from ISR. */
+/* send next UART data using interrupt */
 static void uart_kick(void)
 {
     if (tx_busy || tx_head == tx_tail) return;
@@ -239,8 +229,7 @@ static void uart_write_raw(const char *s)
     __set_PRIMASK(pm);
 }
 
-/* Console-aware output: if a command is half typed, erase that line
- * (VT100 "\r ESC[K"), print the message, then redraw the prompt. */
+/* clear and redraw the command line when printing UART messages */
 static void uart_write(const char *s)
 {
     if (cmd_len > 0) {
@@ -264,8 +253,7 @@ static void uart_sendf(const char *fmt, ...)
     uart_write(buf);
 }
 
-/* Floats are formatted by hand, so the output never depends on the project's
- * "use float with printf from newlib-nano" (-u _printf_float) linker option. */
+/* format float without %f support */
 static char *fstr(char *buf, float v, int decimals, bool plus)
 {
     int32_t scale = decimals >= 2 ? 100 : (decimals == 1 ? 10 : 1);
@@ -312,11 +300,7 @@ void USART1_IRQHandler(void)
     HAL_UART_IRQHandler(&huart1);
 }
 
-/* ============================================================================
- * 4. FLASH: last page = black box, second-to-last page = configuration.
- *    Dual-bank (default): bank 2 pages 255/254, 4 KB each.
- *    Single-bank: pages 255/254, 8 KB each.
- * ==========================================================================*/
+/* FLASH: last page black box, second to last page configuration */
 #define FLASH_PAGE_BLACKBOX 1   /* counted from the end of flash */
 #define FLASH_PAGE_CONFIG   2
 
@@ -350,7 +334,7 @@ static bool flash_erase_tail(int k)
 #endif
 }
 
-/* Erase page k (from the end) and program len bytes (multiple of 8). */
+/* erase and write flash page */
 static bool flash_write_tail(int k, const void *src, uint32_t len)
 {
 #if ENABLE_FLASH
@@ -370,7 +354,7 @@ static bool flash_write_tail(int k, const void *src, uint32_t len)
 #endif
 }
 
-/* --- Configuration image (16 bytes) --- */
+/* Configuration image (16 bytes) */
 #define CFG_MAGIC 0x35474643UL   /* "CFG5" */
 
 typedef struct {
@@ -407,19 +391,12 @@ static bool cfg_save(void)
     return flash_write_tail(FLASH_PAGE_CONFIG, &c, sizeof(c));
 }
 
-/* ============================================================================
- * 5. I2C1 BUS FOR GROVE MODULES
- * ==========================================================================*/
+/* I2C1 BUS FOR GROVE MODULES */
 static bool i2c1_ready = false;
-/* I2C1 kernel clock = PCLK1 = 4 MHz (MSI after reset). TIMINGR fields:
- * PRESC | SCLDEL | SDADEL | SCLH | SCLL. 100 kHz standard mode: tPRESC 0.25 us,
- * SCL low 5.0 us, high 4.0 us, data hold 0.5 us, setup 1.25 us. 25 kHz: the
- * same with PRESC = 3 (everything x4). */
+/* I2C timing for 100 kHz and 25 kHz */
 #define I2C_TIMING_100K 0x00420F13UL
 #define I2C_TIMING_25K  0x30420F13UL
-/* Per-device speed on the shared bus: OLED and matrix at 100 kHz, the 5-way at
- * 25 kHz (its own MCU does not answer at 50/100 kHz, tested on our module).
- * Switching only re-programs the I2C timing register. */
+/* use 100 kHz for OLED/matrix and 25 kHz for 5-way switch */
 #define I2C_FAST_KHZ    100
 #define I2C_FIVEWAY_KHZ 25
 static int  i2c_khz = I2C_FIVEWAY_KHZ;
@@ -454,14 +431,12 @@ static void I2C1_Init(void)
     i2c1_ready = (HAL_I2C_Init(&hi2c1) == HAL_OK);
 }
 
-/* Short busy wait (roughly microseconds at 4 MHz), no SysTick needed. */
 static void i2c_gap(uint32_t n)
 {
     for (volatile uint32_t i = 0; i < n; i++) { }
 }
 
-/* Change the bus speed between transfers. TIMINGR may only be written while
- * the peripheral is disabled (PE = 0), and PE must stay low for 3 APB clocks. */
+/* change I2C speed between transfers */
 static void i2c_for(int khz)
 {
     if (i2c_khz == khz) return;
@@ -474,16 +449,14 @@ static void i2c_for(int khz)
     __HAL_I2C_ENABLE(&hi2c1);
 }
 
-/* A slave left half-way through a transfer (e.g. after a timeout) can hold
- * SDA low forever, and then every device on the bus stops answering. */
+/* check if SDA is stuck low after I2C timeout */
 static bool i2c1_bus_stuck(void)
 {
     return __HAL_I2C_GET_FLAG(&hi2c1, I2C_FLAG_BUSY) != RESET ||
            HAL_GPIO_ReadPin(GPIOB, GPIO_PIN_9) == GPIO_PIN_RESET;     /* SDA held low */
 }
 
-/* Bus recovery: up to 9 clock pulses until the slave releases SDA, then a
- * STOP condition, then a fresh I2C1 init. */
+/* recover I2C by toggling SCL and sending STOP */
 static void i2c1_recover(void)
 {
     HAL_I2C_DeInit(&hi2c1);
@@ -504,8 +477,7 @@ static void i2c1_recover(void)
     I2C1_Init();
 }
 
-/* After a failure: if the bus is stuck, recover it and try once more
- * (otherwise the device simply did not answer). */
+/* retry once if I2C bus gets stuck */
 static bool i2c1_retry_after(bool ok, int attempt)
 {
     if (ok || attempt > 0 || !i2c1_bus_stuck()) return false;
@@ -533,9 +505,7 @@ static bool i2c1_write(uint8_t addr7, uint8_t *data, uint16_t n)
     return false;
 }
 
-/* Write one command byte, then read n bytes back (Seeed register protocol).
- * The 5-way's own MCU needs a moment to prepare the answer, so wait a little
- * between the two. */
+/* send command then read response from 5-way switch */
 static bool i2c1_cmd_read(uint8_t addr7, uint8_t cmd, uint8_t *rx, uint16_t n)
 {
     for (int k = 0; i2c1_ready; k++) {
@@ -550,16 +520,13 @@ static bool i2c1_cmd_read(uint8_t addr7, uint8_t cmd, uint8_t *rx, uint16_t n)
     return false;
 }
 
-/* ============================================================================
- * 6. LED MATRIX 8x8 (HT16K33). Rows top to bottom, bit7 = leftmost column.
- * ==========================================================================*/
+/* LED MATRIX 8x8. Rows top to bottom, bit7 leftmost column. */
 static bool    mx_ok = false;
 static uint8_t mx_shown[8];
 static bool    mx_shown_valid = false;
 
 static const uint8_t GL_SMILE[8]   = {0x3C,0x42,0xA5,0x81,0xA5,0x99,0x42,0x3C};
 static const uint8_t GL_CROSS[8]   = {0x81,0x42,0x24,0x18,0x18,0x24,0x42,0x81};
-/* S and O of the SOS beacon fill the whole 8x8 matrix (2-px strokes). */
 static const uint8_t GL_S[8]       = {0x7E,0xFF,0xC0,0xFE,0x7F,0x03,0xFF,0x7E};
 static const uint8_t GL_O[8]       = {0x7E,0xFF,0xC3,0xC3,0xC3,0xC3,0xFF,0x7E};
 static const uint8_t GL_CHECK[8]   = {0x00,0x01,0x03,0x06,0x8C,0xD8,0x70,0x20};
@@ -584,8 +551,8 @@ static void mx_init(void)
     if (!mx_ok) return;
     uint8_t c;
     c = 0x21; i2c1_write(MATRIX_I2C_ADDR, &c, 1);  /* oscillator on */
-    c = 0xE8; i2c1_write(MATRIX_I2C_ADDR, &c, 1);  /* brightness 8  */
-    c = 0x81; i2c1_write(MATRIX_I2C_ADDR, &c, 1);  /* display on    */
+    c = 0xE8; i2c1_write(MATRIX_I2C_ADDR, &c, 1);  /* brightness 8 */
+    c = 0x81; i2c1_write(MATRIX_I2C_ADDR, &c, 1);  /* display on */
     mx_shown_valid = false;
 #endif
 }
@@ -610,15 +577,13 @@ static void mx_show(const uint8_t rows[8])
 #endif
 }
 
-/* ============================================================================
- * 6b. OLED SSD1306/SSD1315 128x64 - framebuffer, one dirty page per loop pass
- * ==========================================================================*/
+/* OLED 128x64 framebuffer, one dirty page per loop pass */
 static const uint8_t font5x7[][5] = {
-    {0x00,0x00,0x00,0x00,0x00}, {0x00,0x00,0x5F,0x00,0x00}, {0x00,0x07,0x00,0x07,0x00}, /*   ! " */
+    {0x00,0x00,0x00,0x00,0x00}, {0x00,0x00,0x5F,0x00,0x00}, {0x00,0x07,0x00,0x07,0x00}, /* ! " */
     {0x14,0x7F,0x14,0x7F,0x14}, {0x24,0x2A,0x7F,0x2A,0x12}, {0x23,0x13,0x08,0x64,0x62}, /* # $ % */
     {0x36,0x49,0x55,0x22,0x50}, {0x00,0x05,0x03,0x00,0x00}, {0x00,0x1C,0x22,0x41,0x00}, /* & ' ( */
     {0x00,0x41,0x22,0x1C,0x00}, {0x08,0x2A,0x1C,0x2A,0x08}, {0x08,0x08,0x3E,0x08,0x08}, /* ) * + */
-    {0x00,0x50,0x30,0x00,0x00}, {0x08,0x08,0x08,0x08,0x08}, {0x00,0x60,0x60,0x00,0x00}, /* , - . */
+    {0x00,0x50,0x30,0x00,0x00}, {0x08,0x08,0x08,0x08,0x08}, {0x00,0x60,0x60,0x00,0x00}, /* , -  */
     {0x20,0x10,0x08,0x04,0x02}, {0x3E,0x51,0x49,0x45,0x3E}, {0x00,0x42,0x7F,0x40,0x00}, /* / 0 1 */
     {0x42,0x61,0x51,0x49,0x46}, {0x21,0x41,0x45,0x4B,0x31}, {0x18,0x14,0x12,0x7F,0x10}, /* 2 3 4 */
     {0x27,0x45,0x45,0x45,0x39}, {0x3C,0x4A,0x49,0x49,0x30}, {0x01,0x71,0x09,0x05,0x03}, /* 5 6 7 */
@@ -645,7 +610,7 @@ static const uint8_t font5x7[][5] = {
     {0x04,0x3F,0x44,0x40,0x20}, {0x3C,0x40,0x40,0x20,0x7C}, {0x1C,0x20,0x40,0x20,0x1C}, /* t u v */
     {0x3C,0x40,0x30,0x40,0x3C}, {0x44,0x28,0x10,0x28,0x44}, {0x0C,0x50,0x50,0x50,0x3C}, /* w x y */
     {0x44,0x64,0x54,0x4C,0x44}, {0x00,0x08,0x36,0x41,0x00}, {0x00,0x00,0x7F,0x00,0x00}, /* z { | */
-    {0x00,0x41,0x36,0x08,0x00}, {0x10,0x08,0x08,0x10,0x08},                             /* } ~   */
+    {0x00,0x41,0x36,0x08,0x00}, {0x10,0x08,0x08,0x10,0x08},                             /* } ~ */
 };
 
 #define OLED_LINES 8
@@ -668,8 +633,8 @@ static void oled_init(void)
     if (!oled_ok) return;
     static const uint8_t seq[] = {
         0xAE, 0xD5, 0x80, 0xA8, 0x3F, 0xD3, 0x00, 0x40,
-        0x8D, 0x14,             /* charge pump on        */
-        0x20, 0x02,             /* page addressing mode  */
+        0x8D, 0x14,             /* charge pump on */
+        0x20, 0x02,             /* page addressing mode */
         0xA1, 0xC8, 0xDA, 0x12, 0x81, 0x7F, 0xD9, 0xF1, 0xDB, 0x40,
         0xA4, 0xA6, 0xAF
     };
@@ -680,7 +645,7 @@ static void oled_init(void)
 #endif
 }
 
-/* Write one 21-char text line; only marks the page dirty if text changed. */
+/* write OLED text only when it changes */
 static void oled_line(uint8_t line, const char *text)
 {
 #if ENABLE_OLED
@@ -705,7 +670,7 @@ static void oled_line(uint8_t line, const char *text)
 #endif
 }
 
-/* 2x scaled text over two pages (12 px per character, 14 px tall, 1 px margin above and below). */
+/* large OLED text across 2 pages */
 static void oled_big(uint8_t page, uint8_t x, const char *text)
 {
 #if ENABLE_OLED
@@ -735,7 +700,7 @@ static void oled_big(uint8_t page, uint8_t x, const char *text)
 #endif
 }
 
-/* Two-page tall segmented bar (e.g. laser energy 0..10). */
+/* OLED bar for laser energy */
 static void oled_bar(uint8_t page, int value, int total)
 {
 #if ENABLE_OLED
@@ -793,7 +758,7 @@ static void oled_flush_step(void)
 #endif
 }
 
-/* Bounded: a missing OLED must never stop the self-destruct sequence. */
+/* limit OLED retries in case it is disconnected */
 static void oled_flush_all(void)
 {
 #if ENABLE_OLED
@@ -801,14 +766,12 @@ static void oled_flush_all(void)
 #endif
 }
 
-/* ============================================================================
- * 7. BUZZER (PB1 = TIM3_CH4 PWM) with a non-blocking sequencer
- * ==========================================================================*/
+/* BUZZER (PB1 TIM3_CH4 PWM) with a non blocking sequencer */
 typedef struct { uint16_t f0, f1, ms; uint8_t fx; } note_t;  /* f0->f1 sweep, 0 = rest, fx 1 = rumble */
 
 #define DOT  100
 #define DASH 300
-/* SOS in Morse: each letter is exactly 6 entries, so letter = idx / 6. */
+/* SOS in Morse: each letter is exactly 6 entries, so letter = idx / 6 */
 static const note_t SND_SOS[] = {
     {1000,1000,DOT,0},{0,0,DOT,0},{1000,1000,DOT,0},{0,0,DOT,0},{1000,1000,DOT,0},{0,0,300,0},
     {1000,1000,DASH,0},{0,0,DOT,0},{1000,1000,DASH,0},{0,0,DOT,0},{1000,1000,DASH,0},{0,0,300,0},
@@ -838,7 +801,7 @@ static bool     bz_loop = false;
 static uint32_t bz_note_t0 = 0, bz_fx_t = 0;
 static uint16_t bz_cur_freq = 0;
 
-/* MUTE silences everything except the SOS distress beacon. */
+/* mute sounds except SOS */
 static bool bz_quiet(void)
 {
     return cfg.muted && bz_seq != SND_SOS;
@@ -914,7 +877,7 @@ static bool bz_playing(const note_t *seq)
     return bz_seq != NULL && (seq == NULL || bz_seq == seq);
 }
 
-/* Never interrupt the SOS beacon with a smaller sound. */
+/* do not interrupt SOS */
 static void bz_fx(const note_t *seq, uint8_t len)
 {
     if (bz_playing(SND_SOS)) return;
@@ -948,9 +911,7 @@ static void bz_update(void)
     }
 }
 
-/* ============================================================================
- * 8. ON-BOARD SENSORS, ALTITUDE
- * ==========================================================================*/
+/* ON BOARD SENSORS, ALTITUDE */
 #define LSM6DSL_ADDR         0xD4
 #define LSM6DSL_REG_D6D_SRC  0x1D
 #define LSM6DSL_REG_TAP_CFG  0x58
@@ -972,7 +933,7 @@ static void sensors_init(void)
     err += (BSP_MAGNETO_Init()  != MAGNETO_OK);
     sensors_ok = (err == 0);
 
-    /* LSM6DSL hardware orientation (6D) detection, 60 deg, routed to INT1. */
+    /* LSM6DSL hardware orientation (6D) detection, 60 deg, routed to INT1 */
     uint8_t v;
     v = SENSOR_IO_Read(LSM6DSL_ADDR, LSM6DSL_REG_TAP_THS);
     SENSOR_IO_Write(LSM6DSL_ADDR, LSM6DSL_REG_TAP_THS, (uint8_t)((v & ~0xE0U) | (0x2U << 5)));
@@ -983,7 +944,7 @@ static void sensors_init(void)
     (void)SENSOR_IO_Read(LSM6DSL_ADDR, LSM6DSL_REG_D6D_SRC);
 }
 
-/* Accelerometer in m/s^2. Board flat, chip up: Az = +9.8 (flipped: -9.8). */
+/* Accelerometer in m/s^2. Board flat, chip up: Az = +9.8 (flipped: -9.8) */
 static void accel_read(float a[3])
 {
     int16_t r[3] = {0};
@@ -999,10 +960,10 @@ static void sensors_read(sensors_t *s)
     float   g[3] = {0};
 
     s->v[S_T] = BSP_TSENSOR_ReadTemp();        /* deg C */
-    s->v[S_P] = BSP_PSENSOR_ReadPressure();    /* hPa   */
-    s->v[S_H] = BSP_HSENSOR_ReadHumidity();    /* %RH   */
+    s->v[S_P] = BSP_PSENSOR_ReadPressure();    /* hPa */
+    s->v[S_H] = BSP_HSENSOR_ReadHumidity();    /* %RH */
 
-    BSP_ACCELERO_AccGetXYZ(a);                 /* mg    */
+    BSP_ACCELERO_AccGetXYZ(a);                 /* mg */
     float ax = (float)a[0] * G_MS2 / 1000.0f, ay = (float)a[1] * G_MS2 / 1000.0f, az = (float)a[2] * G_MS2 / 1000.0f;
     s->v[S_A] = sqrtf(ax * ax + ay * ay + az * az);
 
@@ -1029,8 +990,7 @@ static void altitude_zero(float p)
 static void altitude_feed(float p)
 {
     p_filt = 0.7f * p_filt + 0.3f * p;                      /* smooth sensor noise */
-    /* Snap to 0.1 hPa steps counted from P0, with hysteresis (0.6 step) so the
-     * value does not flicker between two steps. */
+    /* Snap to 0.1 hPa steps counted from P0, with hysteresis (0.6 step) so the value does not flicker between two steps */
     if (fabsf(p_filt - p_disp) > 0.6f * ALT_STEP_HPA)
         p_disp = p0_hpa + roundf((p_filt - p0_hpa) / ALT_STEP_HPA) * ALT_STEP_HPA;
 }
@@ -1050,17 +1010,14 @@ static uint32_t check_thresholds(const sensors_t *s)
     return mask;
 }
 
-/* ============================================================================
- * 9. GROVE 5-WAY SWITCH (I2C)
- * ==========================================================================*/
+/* GROVE 5 WAY SWITCH (I2C) */
 static uint8_t  fiveway_addr = 0;                    /* 0 = not found */
 static uint8_t  fw_bits = 0, fw_prev = 0;            /* 5-way pressed bits */
 static uint32_t t_fw = 0, fw_hold_t0 = 0, fw_rep_t = 0;
 static uint32_t fw_center_t0 = 0;
 static bool     fw_center_held = false;              /* hold action already done */
 
-/* The 5-way answers at 0x03 with its ID: one little-endian uint32
- * (VID << 16) | PID, i.e. the bytes 02 00 86 28 (checked on the module). */
+/* The 5-way answers at 0x03 with its ID: one little-endian uint32 (VID << 16) | PID */
 static void fiveway_probe(void)
 {
 #if ENABLE_FIVEWAY
@@ -1075,15 +1032,14 @@ static void fiveway_probe(void)
 #endif
 }
 
-/* Read the raw status of n buttons as a bitmask (bit set = pressed). */
+/* Read the raw status of n buttons as a bitmask (bit set = pressed) */
 static bool fiveway_read(uint8_t *bits)
 {
     uint8_t buf[4 + 5];
     if (!fiveway_addr) return false;
     i2c_for(I2C_FIVEWAY_KHZ);
     if (!i2c1_cmd_read(fiveway_addr, MS_CMD_GET_DEV_EVENT, buf, sizeof(buf))) return false;
-    /* Sanity check: event word = 0 except bit 31 (has event), button bytes < 0x20
-     * (raw level + click flags). Anything else means the buffer slipped. */
+    /* Sanity check: event word = 0 except bit 31 (has event), button bytes < 0x20 (raw level + click flags). Anything else means the buffer slipped */
     bool sane = buf[0] == 0 && buf[1] == 0 && buf[2] == 0 && (buf[3] & 0x7FU) == 0;
     for (uint8_t i = 0; i < 5; i++) sane = sane && buf[4 + i] < 0x20U;
     if (!sane) return false;                         /* garbled frame: skip it */
@@ -1097,9 +1053,7 @@ static bool fiveway_read(uint8_t *bits)
 }
 
 
-/* ============================================================================
- * 10. BUTTON (PC13, EXTI13 both edges) AND IMU INT1 (PD11, EXTI11)
- * ==========================================================================*/
+/* BUTTON (PC13, EXTI13 both edges) AND IMU INT1 (PD11, EXTI11) */
 #define BTN_PRESSED_LEVEL GPIO_PIN_RESET
 
 static volatile bool     btn_down = false;
@@ -1156,10 +1110,7 @@ static void button_collect(uint8_t *singles, uint8_t *doubles)
     __set_PRIMASK(pm);
 }
 
-/* ============================================================================
- * 11. BLACK BOX: last 32 events of the current sortie, saved to flash on
- *     self-destruct so it survives RESET and power loss.
- * ==========================================================================*/
+/* BLACK BOX: last 32 events of the current sortie, saved to flash on self destruct so it survives RESET and power loss. */
 typedef enum {
     BB_SORTIE = 1, BB_CHARGE, BB_FIRE, BB_RSV4, BB_CLOSE, BB_OVERRUN,
     BB_RSV7, BB_FLIPPED, BB_RESCUED, BB_STANDBY, BB_DESTRUCT, BB_WAVE, BB_WAVE_CLEAR
@@ -1245,9 +1196,7 @@ static const char *end_name(uint8_t e)
     return e == BB_END_RETURNED ? "RETURNED" : (e == BB_END_TIMEOUT ? "RESCUE TIMEOUT" : "IN FLIGHT");
 }
 
-/* ============================================================================
- * 12. BATTLE: INFECTION MAP, AIMING AND LASER
- * ==========================================================================*/
+/* BATTLE: INFECTION MAP, AIMING AND LASER */
 static uint8_t  map_rows[8];             /* bit7 = column 0 (left) */
 static bool     map_live = false;        /* a map exists for the current sortie */
 static uint32_t t_spread = 0;
@@ -1261,7 +1210,7 @@ static bool     fire_anim = false;
 static int      fire_x = 0, fire_y = 0;
 static uint8_t  blast_rows[8];
 
-/* 8x8 bitmaps (battle map, fog, nests): row y, bit7 = column 0. */
+/* 8x8 bitmaps (battle map, fog, nests): row y, bit7 = column 0 */
 static inline bool rbit(const uint8_t r[8], int x, int y) { return (r[y] & (0x80U >> x)) != 0; }
 static inline void rset(uint8_t r[8], int x, int y)       { r[y] |= (uint8_t)(0x80U >> x); }
 static inline void rclr(uint8_t r[8], int x, int y)       { r[y] &= (uint8_t)~(0x80U >> x); }
@@ -1289,9 +1238,7 @@ static bool     scout_ready = false;
 static int      pings_left = SONAR_PINGS;
 static char     echo_short[10] = "-";       /* OLED: "NE" */
 
-/* Wave n: 2 + n outbreaks in the far half of the map, spreading faster each wave.
- * Wave 1 uses the scouted area: located nests are bigger (plus of 5 cells),
- * nests nobody found are a single cell. */
+/* Wave n: 2 + n outbreaks in the far half of the map, spreading faster each wave. Wave 1 uses the scouted area: located nests are bigger (plus of 5 cells), nests nobody found are a single cell */
 static void wave_start(int n)
 {
     wave_no = n;
@@ -1346,7 +1293,7 @@ static void map_spread(void)
 {
     int n = map_count();
     if (n == 0 || n >= 64) return;
-    /* Collect every free cell next to an infected one, then infect one at random. */
+    /* Collect every free cell next to an infected one, then infect one at random */
     static const int dx[4] = { 0, 0, -1, 1 }, dy[4] = { -1, 1, 0, 0 };
     uint8_t cand[64];
     int nc = 0;
@@ -1363,7 +1310,7 @@ static void map_spread(void)
     }
 }
 
-/* Blast footprint: the 3x3 cells around the crosshair. */
+/* Blast footprint: the 3x3 cells around the crosshair */
 static void blast_mask(int cx, int cy, uint8_t out[8])
 {
     memset(out, 0, 8);
@@ -1383,7 +1330,7 @@ static void aim_nearest(void)
     aim_x = bx; aim_y = by;
 }
 
-/* Scan the 3x3 cells around the scout drone. */
+/* Scan the 3x3 cells around the scout drone */
 static void scout_scan(bool announce)
 {
     for (int dy = -1; dy <= 1; dy++) for (int dx = -1; dx <= 1; dx++) {
@@ -1409,7 +1356,7 @@ static void scout_scan(bool announce)
     }
 }
 
-/* New area: everything under fog, nests hidden in rows 0..5, drone at the bottom. */
+/* New area: everything under fog, nests hidden in rows 0..5, drone at the bottom */
 static void scout_new(void)
 {
     memset(scout_fog, 0xFF, sizeof(scout_fog));
@@ -1436,9 +1383,7 @@ static void scout_move(int dx, int dy)
     scout_scan(true);
 }
 
-/* --- Sonar (single press in STANDBY): a ring goes out, the echo of the
- *     nearest unfound nest comes back sooner and higher the closer it is.
- *     Nothing is revealed: the pilot has to fly there. --- */
+/* Sonar (single press in STANDBY): a ring goes out, the echo of the nearest unfound nest comes back sooner and higher the closer it is. Nothing is revealed: the pilot has to fly there */
 static uint32_t sonar_t0 = 0, sonar_echo_ms = 0;
 static bool     sonar_anim = false;
 static int      echo_d = 0, echo_ux = 0, echo_uy = 0;   /* distance + unit step of the ray */
@@ -1490,9 +1435,7 @@ static void sonar_ping(void)
     }
 }
 
-/* ============================================================================
- * 13. DISPLAY CONTENT: OLED PAGES AND LED MATRIX
- * ==========================================================================*/
+/* DISPLAY CONTENT: OLED PAGES AND LED MATRIX */
 static const uint8_t *icon = NULL;
 static uint32_t icon_until = 0;
 static bool     smile = false;
@@ -1511,14 +1454,9 @@ static int rescue_secs_left(void)
     return (int)((RESCUE_WINDOW_MS - t + 999U) / 1000U);
 }
 
-/* --- OLED content ------------------------------------------------------- */
+/* OLED content */
 static uint32_t t_oled = 0;
 
-/* The OLED is tiny (0.96", 128x64): small 6x8 text is unreadable at arm's
- * length, so each mode shows only 2-3 items in 2x text (10 chars per line),
- * with an empty page between them. Everything else is on the UART. */
-
-/* 2x text centred horizontally (12 px per char, the last one 10 px). */
 static void oled_big_c(uint8_t page, const char *text)
 {
     int w = 12 * (int)strlen(text) - 2;
@@ -1551,12 +1489,6 @@ static void hud_battle(void)
     oled_big_c(6, t);
 }
 
-/* Text sizes for the ATTACKED screen, drawn at any pixel row into a scratch
- * screen that oled_commit() compares page by page.
- *  MID: 7x10 px. The 5x7 font with its outer columns (0, 4) and its top,
- *       middle and bottom rows (0, 3, 6) doubled, so every letter keeps
- *       symmetric strokes (no thin/thick pixels from uneven scaling).
- *  BIG: 10x14 px, plain 2x. */
 #define TXT_MID 1
 #define TXT_BIG 2
 static uint8_t scr[OLED_LINES][128];
@@ -1592,7 +1524,7 @@ static void oled_commit(void)
 #endif
 }
 
-/* ATTACKED: header and rescue hint 7x10, countdown 2x (10x14). */
+/* ATTACKED: header and rescue hint 7x10, countdown 2x (10x14) */
 static void hud_attacked(void)
 {
     char t[8];
@@ -1629,7 +1561,7 @@ static void hud_render(void)
     }
 }
 
-/* Text lines are cached, so re-rendering only marks the changed pages dirty. */
+/* Text lines are cached, so re-rendering only marks the changed pages dirty */
 static void hud_tick(void)
 {
     if (!oled_ok || !elapsed(t_oled, OLED_REFRESH_MS)) return;
@@ -1647,7 +1579,7 @@ static void matrix_render(void)
         if (elapsed(boot_tick, BOOT_ID_MS)) boot_id_shown = true;
         else { mx_show(GL_DIGIT3); return; }
     }
-    /* ATTACKED has the highest priority: any animation yields immediately. */
+    /* ATTACKED has the highest priority: any animation yields immediately */
     if (state == ST_ATTACKED) {
         mx_show(bz_playing(SND_SOS) && (bz_idx / 6U) == 1U ? GL_O : GL_S);
         return;
@@ -1660,8 +1592,7 @@ static void matrix_render(void)
     if (state == ST_STANDBY) {
         if (icon && (int32_t)(icon_until - now) > 0) { mx_show(icon); return; }
         icon = NULL;
-        /* Scouting map: fog lit, scanned cells dark, located nests blink 4 Hz,
-         * the drone blinks 1 Hz. */
+        /* Scouting map: fog lit, scanned cells dark, located nests blink 4 Hz, the drone blinks 1 Hz */
         bool nest_on = ((now / 125U) & 1U) != 0, drone_on = ((now / 500U) & 1U) != 0;
         for (int r = 0; r < 8; r++)
             rows[r] = nest_on ? (uint8_t)(scout_fog[r] | scout_found[r]) : (uint8_t)(scout_fog[r] & ~scout_found[r]);
@@ -1674,9 +1605,7 @@ static void matrix_render(void)
                     if (inside(x, y) && (abs(x - scout_x) == r || abs(y - scout_y) == r)) rset(rows, x, y);
             }
             if (echo_d && t >= sonar_echo_ms && t < sonar_echo_ms + SONAR_RAY_MS) {
-                /* Echo: fog hidden so the ray stands out. Only the drone (steady)
-                 * and a fast-blinking ray from it to the map edge, towards the
-                 * nearest unfound nest. Direction only, like the OLED. */
+                /* Echo: fog hidden so the ray stands out. Only the drone (steady) and a fast-blinking ray from it to the map edge, towards the nearest unfound nest. Direction only, like the OLED */
                 memset(rows, 0, sizeof(rows));
                 rset(rows, scout_x, scout_y);
                 if ((((t - sonar_echo_ms) / SONAR_RAY_BLINK_MS) & 1U) == 0U)
@@ -1717,9 +1646,7 @@ static void matrix_render(void)
     mx_show(rows);
 }
 
-/* ============================================================================
- * 14. STATE MACHINE
- * ==========================================================================*/
+/* STATE MACHINE */
 static void led_set(bool on)
 {
     led_on = on;
@@ -1749,7 +1676,7 @@ static void send_stat(void)
 
 static void laser_try_fire(void);
 
-/* --- Mission score: settled when the sortie ends (back to STANDBY or self-destruct) --- */
+/* Mission score: settled when the sortie ends (back to STANDBY or self-destruct) */
 static void score_finalize(bool play)
 {
     uart_sendf("[EVT] Mission score: %lu (best %lu)\r\n", (unsigned long)score, (unsigned long)cfg.hiscore);
@@ -1875,13 +1802,13 @@ static void terminate(void)
     while (1) { __WFI(); }
 }
 
-/* --- Laser --- */
+/* Laser */
 static void laser_fire(void)
 {
     int before = laser_energy;
     laser_energy -= LASER_SHOT_COST;
 
-    /* No 5-way to aim with: lock the nearest target. */
+    /* No 5-way to aim with: lock the nearest target */
     if (!fiveway_addr) aim_nearest();
 
     blast_mask(aim_x, aim_y, blast_rows);
@@ -1909,8 +1836,7 @@ static void laser_fire(void)
     if (map_count() < MAP_OVERRUN_CELLS) overrun_reported = false;
 }
 
-/* Auto-fire rule (spec): energy >= 5/10, and zombies on the map (energy is
- * kept during the AREA CLEARED pause and fires at the next wave). */
+/* Auto-fire rule (spec): energy >= 5/10, and zombies on the map (energy is kept during the AREA CLEARED pause and fires at the next wave) */
 static bool laser_can_fire(void)
 {
     return state == ST_BATTLE && wave_active && laser_energy >= LASER_SHOT_COST;
@@ -1977,7 +1903,7 @@ static void fiveway_dir(int idx)
     int dx = idx == FIVEWAY_IDX_LEFT ? -1 : (idx == FIVEWAY_IDX_RIGHT ? 1 : 0);
     int dy = idx == FIVEWAY_IDX_UP   ? -1 : (idx == FIVEWAY_IDX_DOWN  ? 1 : 0);
     if (state == ST_STANDBY) scout_move(dx, dy);  /* fly the scout drone */
-    else if (state == ST_BATTLE) aim_move(dx, dy);    /* move the crosshair  */
+    else if (state == ST_BATTLE) aim_move(dx, dy);    /* move the crosshair */
 }
 
 static void fiveway_center_short(void)
@@ -2013,7 +1939,7 @@ static void fiveway_tick(void)
     uint8_t pressed  = (uint8_t)(fw_bits & ~fw_prev);
     uint8_t released = (uint8_t)(~fw_bits & fw_prev);
 
-    /* Directions: act on press, auto-repeat while held. */
+    /* Directions: act on press, auto-repeat while held */
     for (int i = 0; i < 4; i++) if (pressed & (1U << i)) { fiveway_dir(i); fw_hold_t0 = HAL_GetTick(); fw_rep_t = fw_hold_t0; }
     uint8_t held = (uint8_t)(fw_bits & fw_prev & (uint8_t)~C);
     if (held && elapsed(fw_hold_t0, FIVEWAY_REPEAT_DELAY_MS) && elapsed(fw_rep_t, FIVEWAY_REPEAT_MS)) {
@@ -2021,7 +1947,7 @@ static void fiveway_tick(void)
         for (int i = 0; i < 4; i++) if (held & (1U << i)) fiveway_dir(i);
     }
 
-    /* Centre: short press on release, hold action once at 1 s. */
+    /* Centre: short press on release, hold action once at 1 s */
     if (pressed & C) { fw_center_t0 = HAL_GetTick(); fw_center_held = false; }
     if ((fw_bits & C) && !fw_center_held && elapsed(fw_center_t0, FIVEWAY_HOLD_MS)) {
         fw_center_held = true;
@@ -2032,7 +1958,7 @@ static void fiveway_tick(void)
 #endif
 }
 
-/* --- Per-state periodic work --- */
+/* Per-state periodic work */
 static void habitat_check(void)
 {
     bool ok = sens.v[S_T] >= HAB_T_MIN && sens.v[S_T] <= HAB_T_MAX &&
@@ -2084,7 +2010,7 @@ static void standby_tick(void)
     }
 }
 
-/* Heartbeat: faster as the map fills up (1200 ms empty -> 350 ms at 75 %). */
+/* Heartbeat: faster as the map fills up (1200 ms empty -> 350 ms at 75 %) */
 static uint32_t t_beat = 0;
 static uint32_t beat_period(void)
 {
@@ -2130,7 +2056,7 @@ static void battle_tick(void)
         }
     }
 
-    /* Flip detection: IMU interrupt for instant response, polling as a safety net. */
+    /* Flip detection: IMU interrupt for instant response, polling as a safety net */
     if (flip_irq || elapsed(t_flip_poll, FLIP_POLL_MS)) {
         flip_irq = false;
         t_flip_poll = HAL_GetTick();
@@ -2170,9 +2096,7 @@ static void attacked_tick(void)
     }
 }
 
-/* ============================================================================
- * 15. UART COMMAND INTERFACE
- * ==========================================================================*/
+/* UART COMMAND INTERFACE */
 static void cmd_help(void)
 {
     uart_write("[CMD] Commands:\r\n"
@@ -2327,7 +2251,7 @@ static void cmd_exec(char *line)
     uart_sendf("[CMD] ERR unknown command '%s' (type HELP)\r\n", verb);
 }
 
-/* The board echoes what is typed (turn OFF "Local echo" in TeraTerm). */
+/* The board echoes what is typed (turn OFF "Local echo" in TeraTerm) */
 static void uart_poll_commands(void)
 {
     while (rx_tail != rx_head) {
@@ -2358,9 +2282,7 @@ static void uart_poll_commands(void)
     }
 }
 
-/* ============================================================================
- * 16. LOW-LEVEL INIT
- * ==========================================================================*/
+/* LOW LEVEL INIT */
 static void GPIO_IT_Init(void)
 {
     __HAL_RCC_GPIOC_CLK_ENABLE();
@@ -2412,15 +2334,7 @@ static void UART1_Init(void)
     HAL_UART_Receive_IT(&huart1, &rx_byte, 1);
 }
 
-/* ============================================================================
- * 17. MAIN
- * ==========================================================================*/
-/* Power-on is split in two so that nothing ever blocks in a delay call:
- *  app_init()  on-chip hardware only (LED, UART, sensors, buzzer).
- *  boot_step() runs from the super-loop for the first ~400 ms: it averages
- *              10 pressure readings (one every 40 ms) for the altitude zero,
- *              and waits MODULE_BOOT_MS for the Grove modules' own MCUs
- *              before probing I2C. Then it enters STANDBY. */
+/* MAIN */
 static bool     booted = false;
 static int      p0_n = 0;
 static float    p0_sum = 0.0f;
@@ -2466,7 +2380,7 @@ static void boot_step(void)
         uart_sendf("[EVT] Black box recovered (%d records), type BLACKBOX\r\n", f->count);
     }
 
-    /* Seed the map generator from sensor noise so every power-on is a new area. */
+    /* Seed the map generator from sensor noise so every power-on is a new area */
     {
         int16_t a[3] = {0}, m[3] = {0};
         BSP_ACCELERO_AccGetXYZ(a);
@@ -2485,7 +2399,7 @@ static void boot_step(void)
     enter_standby();
 }
 
-/* One pass of the super-loop. Nothing in here blocks for long. */
+/* One pass of the super-loop. Nothing in here blocks for long */
 static void app_loop(void)
 {
     uint8_t singles, doubles;
@@ -2494,8 +2408,7 @@ static void app_loop(void)
 
     uart_poll_commands();
 
-    /* Normally at most one event per pass. If several piled up, stop at the
-     * first mode change so old presses do not act in the new mode. */
+    /* Normally at most one event per pass. If several piled up, stop at the first mode change so old presses do not act in the new mode */
     button_collect(&singles, &doubles);
     sys_state_t s0 = state;
     while (singles-- && state == s0) action_single();
@@ -2503,7 +2416,7 @@ static void app_loop(void)
 
     fiveway_tick();
 
-    /* Modules plugged in after power-on (or after a glitch) are found again. */
+    /* Modules plugged in after power-on (or after a glitch) are found again */
     static uint32_t t_reprobe = 0;
     if (state == ST_STANDBY && elapsed(t_reprobe, MODULE_REPROBE_MS)) {
         t_reprobe = HAL_GetTick();
