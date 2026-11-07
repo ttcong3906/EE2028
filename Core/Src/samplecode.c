@@ -119,10 +119,10 @@ typedef struct {
 static thresh_t th[S_COUNT] = {
     { "T", "C",      10.0f,   35.0f,  true,  true  }, /* Li-ion safe range */
     { "P", "hPa",   950.0f, 1040.0f,  true,  true  }, /* ~540 m flight ceiling */
-    { "H", "%RH",    20.0f,   80.0f,  true,  true  }, /* static / condensation */
+    { "H", "%RH",    20.0f,   85.0f,  true,  true  }, /* static / condensation */
     { "A", "m/s^2",   3.0f,   15.0f,  true,  true  }, /* free fall / impact */
     { "G", "dps",     0.0f,  300.0f,  false, true  }, /* spin out of control */
-    { "M", "uT",     10.0f,  100.0f,  true,  true  }, /* magnetic interference */
+    { "M", "uT",     10.0f,  200.0f,  true,  true  }, /* magnetic interference */
 };
 
 typedef struct {
