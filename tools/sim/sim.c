@@ -451,6 +451,15 @@ int main(void)
     CHECK(wave_active && wave_no == 2 && spread_ms == 2750 &&
           strstr(out, "[EVT] Wave 2: 4 outbreaks"), "wave 2: 4 outbreaks, faster spread");
     CHECK(strstr(out, "Laser fired") && laser_energy == 2, "stored energy fires as soon as the next wave appears");
+    /* Stress test in the pause: energy capped at 10, then every 5/10 is fired */
+    wave_active = false; laser_energy = 0;
+    for (int k = 0; k < 4; k++) { wave_pause_t = HAL_GetTick(); run_ms(80); press(60); run_ms(600); }
+    CHECK(!wave_active && laser_energy == 10 && strstr(last("charged"), "9/10 -> 10/10"), "stress test: energy capped at 10/10 during the pause");
+    clear_out(); wave_pause_t = HAL_GetTick(); run_ms(2010);
+    CHECK(wave_active && count("Laser fired") == 1 && laser_energy == 5, "next wave: first shot at once");
+    for (int y = 0; y < 8; y++) map_rows[y] = 0xFF;
+    run_ms(400);
+    CHECK(count("Laser fired") == 2 && laser_energy == 0, "energy still >= 5/10: fires again after the blast animation");
 
     printf("== BATTLE: spread, overrun ==\n");
     memset(map_rows, 0, 8); cell_set(1, 1); t_spread = HAL_GetTick();
@@ -469,7 +478,7 @@ int main(void)
     run_ms(20);
     CHECK((memcmp(mx_shown, GL_S, 8) == 0 || memcmp(mx_shown, GL_O, 8) == 0) && mx_shown[0] && mx_shown[7],
           "matrix SOS letters use all 8 rows");
-    CHECK(strstr(out, "[ATTACK] Drone #3 Was Attacked! Rescue in 10 s") != NULL, "attack message with drone id");
+    CHECK(strstr(out, "Drone Was Attacked! (drone #3, rescue in 10 s)") != NULL, "attack message with drone id");
     run_ms(150);
     {
         int top = 0, bot = 0;                          /* header occupies pixel rows 0..11 */
@@ -538,8 +547,21 @@ int main(void)
     CHECK(state == ST_ATTACKED, "attacked");
     cfg.hiscore = 999999;                                  /* no new record: config page untouched */
     int cfg_erases = erase_count[0];
-    if (setjmp(jmp_end) == 0) { auto_tick = 1; run_ms(11000); }
-    auto_tick = 0;
+    int mx_writes_before = 0;
+    if (setjmp(jmp_end) == 0) {
+        run_ms(9500);
+        CHECK(state == ST_ATTACKED, "still waiting for rescue at 9.5 s");
+        run_ms(600);
+        CHECK(state == ST_TERMINATED && !standby_entered, "TERMINATED: the loop keeps running, no busy wait");
+        CHECK(sim_delay_calls == 0, "HAL_Delay never called during self-destruct");
+        const char *lastmsg = "Cutting all communication.\r\n";
+        CHECK(strstr(out, lastmsg) && strcmp(last("Cutting"), lastmsg) == 0, "last message is the final UART output");
+        int n0 = outn; type("STATUS\r"); single(); dbl();
+        CHECK((int)outn == n0, "no UART output (not even command echo) after the last message");
+        mx_writes_before = 1;
+        run_ms(3000);
+    }
+    CHECK(mx_writes_before, "terminated path ran inside the super-loop");
     CHECK(count("Was Attacked!") == 10, "10 attack messages");
     CHECK(strstr(out, "[EVT] Drone #3: no rescue. Black box saved. Self-destructing. Cutting all communication.") != NULL, "last message");
     CHECK(strstr(out, "[EVT] Mission score:") != NULL, "score settled before self-destruct");

@@ -195,7 +195,7 @@ BATTLE không gửi telemetry định kỳ, chỉ gửi sự kiện.
 ## 10. Laser gun
 
 - Năng lượng theo đơn vị **1/10**, số nguyên 0–10. Mỗi single press **+3/10** *(đề)*.
-- **Mỗi phát tốn 5/10** *(đề)*. Năng lượng ≥ 5/10 là tự bắn ngay, mỗi lần **một phát**, không cooldown. Năng lượng thừa để dành, tối đa 10/10.
+- **Mỗi phát tốn 5/10** *(đề)*. Còn ≥ 5/10 là còn tự bắn, không cooldown: mỗi lần một phát, phát sau chờ tia + vùng nổ của phát trước xong (khoảng 350 ms). Ví dụ 10/10 bắn 2 phát liền về 0/10. Kiểm tra mỗi vòng lặp trong `battle_tick()`, nên năng lượng không bao giờ đứng yên ở mức ≥ 5/10 khi bản đồ còn zombie.
 - Trong 2 s nghỉ sau AREA CLEARED bản đồ trống nên không bắn (nạp vẫn được). Đợt mới vừa xuất hiện mà đủ năng lượng thì bắn ngay.
 - **Vùng nổ:** vuông 3x3 quanh tâm ngắm. **Âm thanh:** "BOOM", ù trầm 420 → 80 Hz rồi 120 → 60 Hz, có rung.
 - Thông báo: `[EVT] Laser fired: 7 down, +140 x2. Energy 6/10 -> 1/10`; trượt: `[EVT] Laser fired: missed. Energy 5/10 -> 0/10`.
@@ -270,7 +270,7 @@ BATTLE không gửi telemetry định kỳ, chỉ gửi sự kiện.
 ## 15. ATTACKED và TERMINATED *(đề)*
 
 **ATTACKED:**
-- LED2 nháy 2 Hz *(đề)*. Khi vào: `[EVT] Drone #3 flipped! The Last of EE2028`. Mỗi 1 s: `[ATTACK] Drone #3 Was Attacked! Rescue in 7 s` *(đề)*.
+- LED2 nháy 2 Hz *(đề)*. Khi vào: `[EVT] Drone #3 flipped! The Last of EE2028`. Mỗi 1 s: `Drone Was Attacked! (drone #3, rescue in 7 s)` *(đề, mở đầu đúng nguyên văn "Drone Was Attacked!" của checklist)*.
 - Buzzer phát **Morse SOS** liên tục, kêu cả khi im lặng. Matrix hiện chữ S-O-S theo nhịp.
 - OLED: `UNDER ATTACK` và `2x PRESS / TO RESCUE` cỡ vừa 7x10 px, **số giây còn lại** cỡ 2x (10x14 px). Cỡ vừa là font 5x7 nhân đôi cột ngoài (0, 4) và hàng trên, giữa, dưới (0, 3, 6), nên nét chữ đều và đối xứng, không bị mất điểm như khi phóng theo tỉ lệ lẻ; 2x không đủ chỗ cho 12 ký tự.
 - **Được cứu** khi double press *(đề)* hoặc lệnh `RESCUE`. Báo `[EVT] Rescued! Back to BATTLE`, về BATTLE. Matrix mặt cười 1 s, ba nốt đi lên.
@@ -278,9 +278,9 @@ BATTLE không gửi telemetry định kỳ, chỉ gửi sự kiện.
 
 **TERMINATED** (hết 10 s không ai cứu):
 1. Chốt điểm (mục 11), ghi hộp đen vào flash (mục 16).
-2. `[EVT] Drone #3: no rescue. Black box saved. Self-destructing. Cutting all communication.`
-3. Matrix dấu X; OLED `LOST`, `SCORE 230`, `BEST 520` đều chữ to (OLED tự giữ hình này sau khi MCU tắt); giai điệu kết thúc (chờ 2.5 s cho nhạc và dòng UART cuối phát xong).
-4. Tắt USART1, LED2, các ngắt, MCU vào Standby mode.
+2. `[EVT] Drone #3: no rescue. Black box saved. Self-destructing. Cutting all communication.` Đây là dòng UART cuối cùng: ngay sau đó UART thôi nhận chữ mới, lệnh gõ vào bị bỏ qua, không echo.
+3. Matrix dấu X; OLED `LOST`, `SCORE 230`, `BEST 520` đều chữ to (OLED tự giữ hình này sau khi MCU tắt); giai điệu kết thúc.
+4. **Không chờ chặn:** super-loop vẫn chạy (buzzer, matrix, OLED). `terminated_tick()` đợi 2.5 s cho nhạc xong và dòng cuối đã gửi hết (tối đa 3 s), rồi tắt USART1, LED2, các ngắt, MCU vào Standby mode.
 5. Chỉ nút **RESET** đen (hoặc rút nguồn) mới thoát được.
 
 ---
@@ -297,9 +297,9 @@ BATTLE không gửi telemetry định kỳ, chỉ gửi sự kiện.
 
 ## 17. UART và lệnh
 
-**Drone → PC:** tiền tố `[TLM]`, `[WARN]`, `[ATTACK]`, `[EVT]`, `[STAT]`, `[BBOX]`, `[CMD]`. Thông báo đổi mode giữ đúng chữ của đề. Kết thúc `\r\n`.
+**Drone → PC:** tiền tố `[TLM]`, `[WARN]`, `[EVT]`, `[STAT]`, `[BBOX]`, `[CMD]`. Thông báo đổi mode giữ đúng chữ của đề. Kết thúc `\r\n`.
 
-**Tối giản:** mỗi sự kiện một dòng ngắn, không in tọa độ hay số liệu đã có trên OLED/matrix. `[TLM]`, `[WARN]`, `[ATTACK]` giữ đúng định dạng đề. Không tự in `[STAT]`; muốn xem thì gõ `STATUS` (một dòng theo mode):
+**Tối giản:** mỗi sự kiện một dòng ngắn, không in tọa độ hay số liệu đã có trên OLED/matrix. `[TLM]`, `[WARN]` và dòng `Drone Was Attacked!` giữ đúng định dạng đề. Không tự in `[STAT]`; muốn xem thì gõ `STATUS` (một dòng theo mode):
 
 ```
 [STAT] STANDBY, alt +2.1 m, nests 2/3, pings 1/3, score 60, best 520

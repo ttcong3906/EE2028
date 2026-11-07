@@ -264,12 +264,6 @@ static char *fstr(char *buf, float v, int decimals, bool plus)
     return buf;
 }
 
-static void uart_flush(uint32_t timeout_ms)
-{
-    uint32_t t0 = HAL_GetTick();
-    while ((tx_busy || tx_head != tx_tail) && !elapsed(t0, timeout_ms)) { }
-}
-
 void HAL_UART_TxCpltCallback(UART_HandleTypeDef *huart)
 {
     if (huart->Instance != USART1) return;
@@ -1758,6 +1752,12 @@ static void rescue(void)
     enter_battle(true);
 }
 
+/* Self-destruct, part 1: settle the score, save the black box, send the
+ * last message and start the game-over tune. UART output is closed right
+ * after the last message, so nothing else is printed. The loop keeps
+ * running (tune, OLED) and terminated_tick() does part 2. */
+static uint32_t t_terminate = 0;
+
 static void terminate(void)
 {
     bb_log(BB_DESTRUCT, 0, 0, 0, 0);
@@ -1769,18 +1769,22 @@ static void terminate(void)
     bz_stop();
     uart_sendf("[EVT] Drone #%d: no rescue. Black box %s. Self-destructing. Cutting all communication.\r\n",
                 DRONE_ID, saved ? "saved" : "NOT saved");
+    uart_enabled = false;                                /* last message sent: no more output */
     led_set(false);
     matrix_render();
     hud_render();
     oled_flush_all();                                    /* the OLED keeps this image */
     bz_play(SND(SND_GAMEOVER), false);
+    t_terminate = HAL_GetTick();
+}
 
-    uint32_t t0 = HAL_GetTick();
-    while (!elapsed(t0, 2500U)) bz_update();        /* let the last message and tune finish */
-    uart_flush(500);
+/* Self-destruct, part 2: once the tune has played (2.5 s) and the last
+ * message has left the UART, cut all communication and enter Standby. */
+static void terminated_tick(void)
+{
+    bool tx_done = !tx_busy && tx_head == tx_tail;
+    if (!elapsed(t_terminate, 2500U) || (!tx_done && !elapsed(t_terminate, 3000U))) return;
 
-    /* Cut all communication (spec) */
-    uart_enabled = false;
     HAL_UART_AbortReceive(&huart1);
     HAL_UART_DeInit(&huart1);
     tone_set(0);
@@ -1799,7 +1803,7 @@ static void terminate(void)
 #endif
     HAL_SuspendTick();
     __disable_irq();
-    while (1) { __WFI(); }
+    while (1) { __WFI(); }                               /* only if Standby is disabled */
 }
 
 /* Laser */
@@ -2041,8 +2045,7 @@ static void battle_tick(void)
         uart_sendf("[EVT] Wave %d cleared, +%d\r\n", wave_no, 50 * wave_no);
         bz_fx(SND(SND_VICTORY));
     } else if (map_live && !wave_active && elapsed(wave_pause_t, WAVE_PAUSE_MS)) {
-        wave_start(wave_no + 1);
-        laser_try_fire();                                /* energy kept over the pause */
+        wave_start(wave_no + 1);                         /* stored energy fires below */
     } else if (map_live && wave_active && elapsed(t_spread, spread_ms)) {
         t_spread = HAL_GetTick();
         map_spread();
@@ -2055,6 +2058,10 @@ static void battle_tick(void)
             overrun_reported = false;
         }
     }
+
+    /* Auto-fire (spec): whenever energy is 5/10 or more and zombies are on the
+     * map. One shot at a time: the next waits until the beam and blast are over. */
+    if (!fire_anim || elapsed(fire_t0, 4U * BEAM_FRAME_MS + BLAST_FLASH_MS)) laser_try_fire();
 
     /* Flip detection: IMU interrupt for instant response, polling as a safety net */
     if (flip_irq || elapsed(t_flip_poll, FLIP_POLL_MS)) {
@@ -2092,7 +2099,7 @@ static void attacked_tick(void)
     }
     if (elapsed(t_attack_msg, ATTACK_MSG_MS)) {
         t_attack_msg += ATTACK_MSG_MS;
-        uart_sendf("[ATTACK] Drone #%d Was Attacked! Rescue in %d s\r\n", DRONE_ID, rescue_secs_left());
+        uart_sendf("Drone Was Attacked! (drone #%d, rescue in %d s)\r\n", DRONE_ID, rescue_secs_left());
     }
 }
 
@@ -2405,6 +2412,14 @@ static void app_loop(void)
     uint8_t singles, doubles;
 
     if (!booted) { boot_step(); return; }
+
+    if (state == ST_TERMINATED) {                        /* no input, no output: just finish */
+        bz_update();
+        matrix_render();
+        oled_flush_step();
+        terminated_tick();
+        return;
+    }
 
     uart_poll_commands();
 
