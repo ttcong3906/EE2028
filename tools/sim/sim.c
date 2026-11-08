@@ -234,8 +234,8 @@ int main(void)
     CHECK(strstr(out, "[EVT] Habitat found (T 25.0 C, H 60 %RH)") != NULL && habitat_found, "habitat after 3 s of T 20-32 C and H 40-70 %RH");
     run_ms(200);
     CHECK(memcmp(mx_shown, GL_HOUSE, 8) == 0, "matrix shows the house icon");
-    clear_out(); s_hum = 85; run_ms(1000);
-    CHECK(!habitat_found && strstr(out, "[WARN] H: 85.00 %RH, exceeds threshold of 80.00 %RH") && count("[TLM]") == 0, "humid: habitat lost + WARN instead of TLM");
+    clear_out(); s_hum = 90; run_ms(1000);
+    CHECK(!habitat_found && strstr(out, "[WARN] H: 90.00 %RH, exceeds threshold of 85.00 %RH") && count("[TLM]") == 0, "humid: habitat lost + WARN instead of TLM");
     run_ms(150);
     CHECK(big_has(0, "NESTS") && !oled_has(6, "WARN"), "warnings stay on the UART, OLED unchanged");
     s_hum = 60;
@@ -268,24 +268,24 @@ int main(void)
     printf("== sonar ==\n");
     run_ms(600);
     clear_out(); type("PING\r");
-    CHECK(strstr(out, "[EVT] Ping 1/3: echo NE\r\n") && pings_left == 2, "PING: nearest unfound nest (6,1) is NE (no distance shown)");
+    CHECK(strstr(out, "[EVT] Ping 1/3: echo received\r\n") && pings_left == 2 && echo_x == 6 && echo_y == 1, "PING: nearest unfound nest is (6,1); no direction or distance printed");
     CHECK(snd_echo[1].ms == 490 && snd_echo[2].f0 == 1600 && bz_seq == snd_echo, "echo after 150+100*4 = 550 ms at 2600-250*4 = 1600 Hz");
     CHECK(scout_found_n == 1 && rbit(scout_fog, 6, 1), "sonar does not reveal anything");
     run_ms(190);
     CHECK((mx_shown[2] & (0x80u >> 3)) && (mx_shown[5] & (0x80u >> 6)), "matrix: expanding ring around the scout");
     run_ms(400);
     {
-        static const uint8_t ray_on[8] = {0x00, 0x01, 0x02, 0x04, 0x08, 0x10, 0x00, 0x00};   /* drone (3,5) + NE ray to the edge */
-        static const uint8_t ray_off[8] = {0x00, 0x00, 0x00, 0x00, 0x00, 0x10, 0x00, 0x00};
-        CHECK(memcmp(mx_shown, ray_on, 8) == 0, "matrix: echo = fog hidden, drone + ray towards NE");
+        static const uint8_t mark_on[8] = {0x00, 0x02, 0x00, 0x00, 0x00, 0x10, 0x00, 0x00};  /* drone (3,5) + nest (6,1) */
+        static const uint8_t mark_off[8] = {0x00, 0x00, 0x00, 0x00, 0x00, 0x10, 0x00, 0x00};
+        CHECK(memcmp(mx_shown, mark_on, 8) == 0, "matrix: echo = fog hidden, drone + the nest cell");
         run_ms(80);
-        CHECK(memcmp(mx_shown, ray_off, 8) == 0, "matrix: ray blinks (off phase shows only the drone)");
+        CHECK(memcmp(mx_shown, mark_off, 8) == 0, "matrix: nest blinks (off phase shows only the drone)");
         run_ms(80);
-        CHECK(memcmp(mx_shown, ray_on, 8) == 0, "matrix: ray back on");
+        CHECK(memcmp(mx_shown, mark_on, 8) == 0, "matrix: nest back on");
         run_ms(1500);
         CHECK(!sonar_anim && popcount8(mx_shown) > 20, "after 1.5 s the fogged map is back");
     }
-    CHECK(big_has(6, "PINGS 2/3") && big_has(3, "ECHO NE"), "OLED: pings left + big echo direction");
+    CHECK(big_has(6, "PINGS 2/3") && big_has(3, "ECHO OK"), "OLED: pings left + ECHO OK (no direction)");
     dump_oled("1_standby");
     run_ms(1000); type("PING\r"); run_ms(1000); type("PING\r"); run_ms(1000);
     clear_out(); type("PING\r");
@@ -294,7 +294,7 @@ int main(void)
     for (int i = 0; i < 3; i++) fw_tap(FIVEWAY_IDX_UP);
     CHECK(scout_x == 6 && scout_y == 2 && strstr(out, "Nest found (2/3)") && rbit(scout_found, 6, 1), "5-way flies the scout to the second nest");
     CHECK(score == 40, "second nest: score 40");
-    run_ms(630);                                       /* last echo ray (up to 2.35 s) is over */
+    run_ms(630);                                       /* last echo blink (up to 2.35 s) is over */
     {
         uint32_t now = HAL_GetTick();
         bool drone_lit = (mx_shown[2] & (0x80u >> 6)) != 0, fog_lit = (mx_shown[0] & (0x80u >> 7)) != 0;

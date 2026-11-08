@@ -9,7 +9,7 @@ Firmware nằm trong **một file `Core/Src/main.c`**, chạy trên **một boar
 |---|---|
 | Board B-L4S5I-IOT01A | Toàn bộ yêu cầu của đề |
 | **LED matrix** | **Bản đồ**: sương mù trinh sát ở STANDBY, bản đồ bắn zombie ở BATTLE, chữ SOS khi bị tấn công |
-| **OLED** | **Vài con số quan trọng, chữ to**: số ổ đã tìm, hướng tiếng vọng, số ping; đợt, năng lượng laser, điểm; đếm ngược cứu hộ; điểm cuối và kỷ lục |
+| **OLED** | **Vài con số quan trọng, chữ to**: số ổ đã tìm, có tiếng vọng hay không, số ping; đợt, năng lượng laser, điểm; đếm ngược cứu hộ; điểm cuối và kỷ lục |
 | **Buzzer** | **Âm thanh và nhạc**: tiếng vọng sonar, tiếng bắn, nhịp tim nhanh dần theo mức nguy hiểm, nhạc chiến thắng / kỷ lục / kết thúc, SOS |
 | **5-way switch** | **Điều khiển**: lái drone trinh sát, ping sonar, dời tâm ngắm, khóa mục tiêu |
 
@@ -104,7 +104,7 @@ Ký hiệu *(đề)* = yêu cầu bắt buộc của đề bài. **Drone không 
 | 6 cảm biến *(đề)* | Đọc mỗi 1 s, so ngưỡng (mục 13) | | `[TLM] T: … M: …` **đúng 6 trường**, hoặc `[WARN] …` *(đề)* |
 | LED2 *(đề)* | Sáng liên tục | | |
 | **Bản đồ trinh sát** | Lái drone qua sương mù, quét 3x3 (mục 7) | Matrix | `[EVT] Nest found (2/3)` |
-| **Sonar** (PB single) | Ping, nghe tiếng vọng (mục 7) | Vòng sóng trên matrix; ping + tiếng vọng; OLED `ECHO NE` (chữ to) | `[EVT] Ping 1/3: echo NE` |
+| **Sonar** (PB single) | Ping, nghe tiếng vọng (mục 7) | Vòng sóng trên matrix; ping + tiếng vọng; ô ổ nháy nhanh 1.5 s; OLED `ECHO OK` (chữ to) | `[EVT] Ping 1/3: echo received` |
 | **Tìm nơi ở** | Nhiệt độ 20–32 °C **và** độ ẩm 40–70 %RH liên tục 3 s (đề: humidity "used to find new human habitats") | Matrix: ngôi nhà 2 s; chuông | `[EVT] Habitat found (T 26.1 C, H 58 %RH)` |
 | 5-way 4 hướng | Lái drone trinh sát 1 ô (giữ thì đi liên tục) | | |
 | 5-way giữa **nhấn ngắn** | Ping sonar, giống single press | | |
@@ -119,7 +119,7 @@ Ký hiệu *(đề)* = yêu cầu bắt buộc của đề bài. **Drone không 
 STANDBY        BATTLE         ATTACKED              TERMINATED
 NESTS 1/3      WAVE 2         UNDER ATTACK          LOST
                (CLEARED!)       7 s
-ECHO NE        ▮▮▮▮▮▮▯▯▯▯                           SCORE 230
+ECHO OK        ▮▮▮▮▮▮▯▯▯▯                           SCORE 230
                                 2x PRESS
 PINGS 2/3      230              TO RESCUE            BEST 520
 ```
@@ -142,14 +142,14 @@ PINGS 2/3      230              TO RESCUE            BEST 520
 | Tắt | Đã quét, trống |
 | Nháy nhanh 4 Hz | Ổ zombie đã tìm thấy |
 | Nháy chậm 1 Hz | Drone trinh sát |
-| Nền tối, một vạch nháy nhanh từ drone (1.5 s sau mỗi ping) | Hướng tới ổ gần nhất chưa tìm thấy |
+| Nền tối, drone sáng liên tục và một ô nháy nhanh (1.5 s sau mỗi ping) | Vị trí ổ gần nhất chưa tìm thấy |
 
 **Sonar** (PB single, nhấn ngắn nút giữa 5-way, hoặc lệnh `PING`):
 1. Matrix vẽ **vòng sóng** lan ra từ drone (4 khung × 90 ms), buzzer kêu "ping".
-2. Sonar dò **ổ chưa tìm thấy gần nhất**. Khoảng cách `d` tính theo số ô đi chéo được (`max(|dx|, |dy|)`, 1–7), hướng làm tròn về 8 hướng (N là phía hàng 0).
+2. Sonar dò **ổ chưa tìm thấy gần nhất**. Khoảng cách `d` tính theo số ô đi chéo được (`max(|dx|, |dy|)`, 1–7).
 3. **Tiếng vọng** đến sau `150 + 100·d` ms, cao độ `2600 − 250·d` Hz: ổ càng gần thì vọng càng sớm và càng cao.
-4. Cùng lúc tiếng vọng, matrix **tắt sương mù**, chỉ còn drone (sáng liên tục) và **một vạch từ drone tới mép bản đồ theo hướng đó, nháy nhanh** (80 ms sáng / 80 ms tắt) trong 1.5 s, rồi trở lại bản đồ. OLED và UART cũng chỉ báo **hướng** (`ECHO NE`, `[EVT] Ping 1/3: echo NE`); khoảng cách chỉ đoán được qua tiếng vọng.
-5. Sonar **không mở ô nào**: muốn xác nhận phải lái drone tới.
+4. Cùng lúc tiếng vọng, matrix **tắt sương mù**, chỉ còn drone (sáng liên tục) và **đúng ô của ổ đó, nháy nhanh** (80 ms sáng / 80 ms tắt) trong 1.5 s, rồi biến mất và bản đồ sương mù hiện lại. OLED ghi `ECHO OK`, UART ghi `[EVT] Ping 1/3: echo received` (không báo hướng, không báo khoảng cách). Hết ổ để dò: `ECHO NONE`, `no echo`.
+5. Sonar **không tính là đã tìm**: ô chỉ hiện chớp nhoáng, muốn xác nhận (+20 điểm) phải lái drone tới để vùng quét 3×3 chạm ô đó.
 6. Hết ping: `[EVT] No pings left`, tiếng ù trầm. Đã tìm đủ 3 ổ: `no echo`.
 
 **Liên kết với BATTLE:**
@@ -247,10 +247,10 @@ BATTLE không gửi telemetry định kỳ, chỉ gửi sự kiện.
 |---|---|---|---|---|---|
 | T | Nhiệt độ | `C` | 10.0 | 35.0 | Khoảng hoạt động an toàn của pin Li-ion và điện tử |
 | P | Áp suất | `hPa` | 950.0 | 1040.0 | 950 hPa ≈ 540 m (trần bay); trên 1040 hPa gần kỷ lục ở mực nước biển, coi là lỗi |
-| H | Độ ẩm tương đối | `%RH` | 20.0 | 80.0 | Trên 80 % dễ đọng sương trên mạch; dưới 20 % dễ tĩnh điện |
+| H | Độ ẩm tương đối | `%RH` | 20.0 | 85.0 | Trên 85 % dễ đọng sương trên mạch; dưới 20 % dễ tĩnh điện. Nới từ 80 lên 85 cho lúc demo |
 | A | Độ lớn gia tốc √(x²+y²+z²) | `m/s^2` | 3.0 | 15.0 | < 0.3 g là rơi tự do; > 1.5 g là va chạm (cảm biến đặt dải ±2 g) |
 | G | Độ lớn vận tốc góc | `dps` | — | 300.0 | Quay > 300 °/s là mất kiểm soát |
-| M | Độ lớn từ trường | `uT` | 10.0 | 100.0 | Từ trường Trái Đất 25–65 µT; > 100 µT là có nam châm hoặc vật nhiễm từ ở gần |
+| M | Độ lớn từ trường | `uT` | 10.0 | 200.0 | Từ trường Trái Đất 25–65 µT; đặt cạnh laptop đã lên gần 100 µT, nên lấy 200 µT. Nam châm sát board cho vài trăm µT (thang đo ±400 µT mỗi trục) nên vẫn bắt được |
 
 - Đổi đơn vị: A `mg × 9.80665 / 1000`; G `mdps / 1000`; M `mGauss / 10 = µT`.
 - **Độ cao** (lệnh `STATUS`): mốc 0 m là `P0` lúc khởi động, `h = 44330 × (1 − (P/P0)^0.1903)` m. Áp suất được làm mượt (trung bình mũ `0.7·cũ + 0.3·mới`), rồi làm tròn theo bậc 0.1 hPa (≈ 0.85 m) tính từ P0, có trễ 0.06 hPa để không nhảy qua lại. Dòng `[TLM]` vẫn gửi áp suất thật.
@@ -352,7 +352,7 @@ Lái và ngắm, khóa mục tiêu chỉ làm bằng 5-way.
 | Giữ lật để xác nhận / cửa sổ cứu hộ | 300 ms / 10 s |
 | 5-way: đọc / bắt đầu lặp khi giữ / lặp / giữ nút giữa | 30 ms / 400 ms / 150 ms / 1 s |
 | OLED: vẽ lại | 100 ms |
-| Sonar: vòng sóng / tiếng vọng / vạch hướng | 4 × 90 ms / 150 + 100·d ms / 1.5 s, nháy 80 ms |
+| Sonar: vòng sóng / tiếng vọng / ô ổ nháy | 4 × 90 ms / 150 + 100·d ms / 1.5 s, nháy 80 ms |
 | Laser: tia / vùng nổ / tâm ngắm nháy | 4 × 50 ms / 150 ms / 4 Hz |
 | Khởi động / số hiệu trên matrix | ≈ 400 ms (10 lần đọc áp suất × 40 ms, chờ module ≥ 300 ms) / 1 s |
 | Nhịp tim | 1200 ms → 350 ms theo số ô nhiễm |

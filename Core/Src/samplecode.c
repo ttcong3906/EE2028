@@ -80,8 +80,8 @@ extern uint8_t SENSOR_IO_Read(uint8_t Addr, uint8_t Reg);
 #define SCOUT_NESTS             3      /* hidden nests per area = wave 1 outbreaks */
 #define SONAR_PINGS             3      /* sonar pings per area */
 #define SONAR_RING_MS           90U    /* ring animation: 4 frames */
-#define SONAR_RAY_MS            1500U  /* echo: direction ray on a blank matrix */
-#define SONAR_RAY_BLINK_MS      80U    /* ray blinks fast (about 6 Hz) */
+#define SONAR_MARK_MS           1500U  /* echo: the nest cell blinks on a blank matrix */
+#define SONAR_MARK_BLINK_MS     80U    /* fast blink (about 6 Hz) */
 #define BEAT_SLOW_MS            1200U  /* heartbeat period, empty map */
 #define BEAT_FAST_MS            350U   /* heartbeat period, map at 75 % */
 #define BOOT_ID_MS              1000U
@@ -1230,7 +1230,7 @@ static uint8_t  scout_found[8];          /* nests located */
 static int      scout_x = 3, scout_y = 7, scout_found_n = 0;
 static bool     scout_ready = false;
 static int      pings_left = SONAR_PINGS;
-static char     echo_short[10] = "-";       /* OLED: "NE" */
+static char     echo_short[10] = "-";       /* OLED: "OK" or "NONE" */
 
 /* Wave n: 2 + n outbreaks in the far half of the map, spreading faster each wave. Wave 1 uses the scouted area: located nests are bigger (plus of 5 cells), nests nobody found are a single cell */
 static void wave_start(int n)
@@ -1377,18 +1377,12 @@ static void scout_move(int dx, int dy)
     scout_scan(true);
 }
 
-/* Sonar (single press in STANDBY): a ring goes out, the echo of the nearest unfound nest comes back sooner and higher the closer it is. Nothing is revealed: the pilot has to fly there */
+/* Sonar (single press in STANDBY): a ring goes out, the echo of the nearest
+ * unfound nest comes back sooner and higher the closer it is, and the nest cell
+ * blinks for 1.5 s. It only counts as found when the scout flies over it. */
 static uint32_t sonar_t0 = 0, sonar_echo_ms = 0;
 static bool     sonar_anim = false;
-static int      echo_d = 0, echo_ux = 0, echo_uy = 0;   /* distance + unit step of the ray */
-
-static const char *dir8(int dx, int dy)          /* N = towards row 0 */
-{
-    static const char *n[8] = { "E", "NE", "N", "NW", "W", "SW", "S", "SE" };
-    float a = atan2f((float)-dy, (float)dx) * 57.29578f;
-    if (a < 0) a += 360.0f;
-    return n[((int)(a + 22.5f) / 45) % 8];
-}
+static int      echo_d = 0, echo_x = 0, echo_y = 0;     /* distance + nest cell */
 
 static void sonar_ping(void)
 {
@@ -1417,14 +1411,14 @@ static void sonar_ping(void)
         bz_fx(snd_echo, 1);
     } else {
         echo_d = best;
-        echo_ux = bx > 0 ? 1 : (bx < 0 ? -1 : 0);
-        echo_uy = by > 0 ? 1 : (by < 0 ? -1 : 0);
+        echo_x = scout_x + bx;
+        echo_y = scout_y + by;
         sonar_echo_ms = 150U + 100U * (uint32_t)best;
         uint16_t f = (uint16_t)(2600 - 250 * best);
         snd_echo[1] = (note_t){ 0, 0, (uint16_t)(sonar_echo_ms - 60U), 0 };
         snd_echo[2] = (note_t){ f, f, 90, 0 };                /* the echo */
-        snprintf(echo_short, sizeof(echo_short), "%s", dir8(bx, by));   /* direction only */
-        uart_sendf("[EVT] Ping %d/%d: echo %s\r\n", SONAR_PINGS - pings_left, SONAR_PINGS, dir8(bx, by));
+        strcpy(echo_short, "OK");
+        uart_sendf("[EVT] Ping %d/%d: echo received\r\n", SONAR_PINGS - pings_left, SONAR_PINGS);
         bz_fx(snd_echo, 3);
     }
 }
@@ -1598,15 +1592,14 @@ static void matrix_render(void)
                 for (int y = scout_y - r; y <= scout_y + r; y++) for (int x = scout_x - r; x <= scout_x + r; x++)
                     if (inside(x, y) && (abs(x - scout_x) == r || abs(y - scout_y) == r)) rset(rows, x, y);
             }
-            if (echo_d && t >= sonar_echo_ms && t < sonar_echo_ms + SONAR_RAY_MS) {
-                /* Echo: fog hidden so the ray stands out. Only the drone (steady) and a fast-blinking ray from it to the map edge, towards the nearest unfound nest. Direction only, like the OLED */
+            if (echo_d && t >= sonar_echo_ms && t < sonar_echo_ms + SONAR_MARK_MS) {
+                /* Echo: fog hidden so the nest stands out. Only the drone (steady) and the
+                 * nest cell, blinking fast. Then the fogged map comes back. */
                 memset(rows, 0, sizeof(rows));
                 rset(rows, scout_x, scout_y);
-                if ((((t - sonar_echo_ms) / SONAR_RAY_BLINK_MS) & 1U) == 0U)
-                    for (int x = scout_x + echo_ux, y = scout_y + echo_uy; inside(x, y); x += echo_ux, y += echo_uy)
-                        rset(rows, x, y);
+                if ((((t - sonar_echo_ms) / SONAR_MARK_BLINK_MS) & 1U) == 0U) rset(rows, echo_x, echo_y);
             }
-            if (t >= 4U * SONAR_RING_MS && t >= sonar_echo_ms + SONAR_RAY_MS) sonar_anim = false;
+            if (t >= 4U * SONAR_RING_MS && t >= sonar_echo_ms + SONAR_MARK_MS) sonar_anim = false;
         }
         mx_show(rows);
         return;
