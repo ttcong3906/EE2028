@@ -1984,6 +1984,7 @@ static void standby_tick(void)
         sensors_read(&sens);
         sens_valid = true;
         altitude_feed(sens.v[S_P]);
+        //breakpoint for demo
         warn_mask = check_thresholds(&sens);
 
         if (warn_mask == 0) {
